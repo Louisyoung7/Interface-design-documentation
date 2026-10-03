@@ -34,6 +34,7 @@
 | 0 | 200 | 成功 |
 | 40001 | 400 | 参数校验失败 |
 | 40101 | 401 | 未登录 / Token 过期 |
+| 40102 | 401 | 账号或密码错误 |
 | 40301 | 403 | 无权限（越权访问他人数据 / 设备） |
 | 40401 | 404 | 资源不存在 |
 | 40901 | 409 | 状态冲突（如设备离线无法下发命令） |
@@ -52,13 +53,31 @@
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /auth/login/sms | 手机号+验证码登录/注册，返回 JWT |
-| POST | /auth/login/wechat | 小程序 code 换取登录态（openid 绑定） |
+| POST | /auth/register | 账号密码注册（手机号 + 密码 + 角色），返回 JWT |
+| POST | /auth/login | **账号密码登录**（手机号 / 用户名 + 密码），返回 JWT |
 | POST | /auth/refresh | 刷新 Token |
 | GET | /users/me | 【鉴权】当前用户资料与角色 |
 | POST | /users/{elderId}/guardians | 【鉴权】老人绑定监护关系（需老人端授权码） |
 | DELETE | /users/guardians/{relationId} | 【鉴权】解除监护关系 |
 | GET | /users/{elderId}/profile | 【鉴权】老人基础信息（监护人可见） |
+
+> **认证方式约定**：小程序端主登录方式为**账号 + 密码**，**不再使用短信验证码**（免去短信网关、验证码下发与存储）。
+>
+> - 登录账号为手机号或用户名；密码服务端 **BCrypt 加盐哈希**存储，库内不存明文，登录失败统一返回 `40102` 不区分"账号不存在 / 密码错误"；
+> - 局域网阶段为明文 HTTP，密码在传输层可见；在意的话前端可先做一次 SHA-256 再传（**不是安全替代**），正式环境直接上 HTTPS（见文档 01 附录）；
+> - **本阶段不做微信登录**：`wx.login` + `code2session` 虽然是免费的基础能力（个人主体小程序即可用，无需微信认证），但仍需后端出网访问 `api.weixin.qq.com`、配置 appid / secret，并额外设计"首次微信登录如何绑定已有账号"的流程。当前统一走账号密码；后续需要时再加回 `POST /auth/login/wechat` 并在 `user` 表补 `wechat_open_id` 字段即可。
+> - 老人账号可由监护人在小程序内代建，或由 Web 管理后台创建（若全部由后台代建，可去掉 `/auth/register`）。
+
+**示例：账号密码登录**
+
+```
+POST /auth/login
+{ "account":"13800001234", "password":"******" }
+
+// 响应
+{ "code":0, "data":{ "token":"eyJhbGciOi...", "refreshToken":"...",
+                     "userId":"u-1001", "role":"GUARDIAN", "expiresIn":7200 } }
+```
 
 ## 4. 设备管理（命令实际经 MQTT 下行）
 
