@@ -1,6 +1,6 @@
 # 05 · AI 大模型接入与 RAG 方案（Spring Boot + Spring AI）
 
-> 后端：Spring Boot　|　数据库：PostgreSQL（pgvector，建表见文档 06）　|　大模型：OpenAI 兼容 API，API Key 由监护人代配　|　版本 V1.4
+> 后端：Spring Boot　|　数据库：PostgreSQL（pgvector，建表见文档 06）　|　**OCR 与 Embedding：本地部署（不出网、无需 Key）**　|　**Chat 问答：OpenAI 兼容 API，API Key 由监护人代配**　|　版本 V1.4
 
 ## 1. 接入方式：Java 后端直连大模型
 
@@ -13,7 +13,7 @@
 
 RAG 框架采用 **Spring AI + `PgVectorStore`**：与 Spring Boot 原生装配，自带 `ChatClient`、`EmbeddingModel`、`VectorStore` 与 RAG Advisor，OpenAI 兼容接口开箱可用；向量表结构与索引定义见文档 06，不在此重复。
 
-出网仅需为后端主机放行到模型域名的访问，鉴权与 Key 管理内聚在后端。
+**出网范围**：只有 **Chat 问答**需要出网（放行监护人所选模型的域名），鉴权与 Key 管理内聚在后端。**OCR 与 Embedding 均在本地完成，不出网、不需要 Key**。
 
 ## 2. API Key 由监护人代老人配置
 
@@ -97,15 +97,72 @@ file: 阿莫西林说明书.jpg        // 或 .pdf
 { "code":0, "data":{ "manualId":"dm-77", "status":"PARSING" } }
 ```
 
-**本期录入实现范围**：上传图片/PDF → 第三方 OCR API 转文本 → 切块 → Embedding → 写入 pgvector；召回时按 medicineId / elderId 过滤、答案带出处。不做版面分析（表格 / 多页 / 图示还原）与多模态直接读图。
+**本期录入实现范围**：上传图片/PDF → **OCR 转文本（默认本地 OCR，云端 API 为可切换备选）** → 切块 → Embedding → 写入 pgvector；召回时按 medicineId / elderId 过滤、答案带出处。不做版面分析（表格 / 多页 / 图示还原）。
+
+### 4.1 OCR 方案：本地优先，云端备选
+
+| 方案 | 费用 | 中文印刷体效果 | 部署成本 | 说明 |
+|------|------|----------------|----------|------|
+| **RapidOCR（ONNX，纯 CPU）** ← 默认 | 免费 | 好（接近 PaddleOCR） | 小：`pip install rapidocr-onnxruntime` + FastAPI 包一层，模型约 20MB | 无重依赖、启动快，局域网内闭环 |
+| PaddleOCR | 免费 | 最好 | 中：PaddlePaddle 依赖较大，CPU 推理偏慢 | 效果优先时选它 |
+| Tesseract + `chi_sim`（tess4j） | 免费 | 一般（说明书小字 / 复杂排版易掉字） | 最小：Java JNI 直接调，无需独立服务 | 仅当"不想起额外服务"时考虑 |
+| 云端 OCR API（腾讯 / 百度 / 阿里） | 有免费额度，超出按次计费（约几分~几毛 / 次） | 好 | 需注册 + **个人实名认证**、配 Key、后端放行出网域名 | 见下方说明 |
+| 多模态大模型直接读图 | 按 token 计费 | 好（取决于模型） | **零新增部署**（复用已有大模型通道） | 见 4.2 |
+
+**云端 OCR API 的实际情况**：
+
+- **要不要钱**：主流厂商均提供**每月免费额度**（通常数百~数千次，以官网为准）；说明书录入是低频操作（一药一次），演示阶段基本用不到付费额度。
+- **要不要认证**：需要**实名认证**，个人实名即可，不要求企业主体、不要求微信认证。
+- **代价**：多一个 Key 要管理、后端需放行出网、且**说明书含用药信息，健康数据会出网**。
+
+**结论：本项目默认走本地 OCR** —— 零费用、无需实名、数据不出内网，与"老人用药属敏感健康数据"的合规要求一致（见文档 01 附录第 5 条）。
+
+- **部署形态**：一个 Python 侧车服务 `ocr-service`（FastAPI），`POST /ocr` 收图片 / PDF，返回按行 / 段落组织的纯文本；Java 侧抽象为 `OcrClient` 接口，实现类可切换：`medbox.ocr.provider=local | cloud`（`LocalOcrClient` / `CloudOcrClient`）。
+- **PDF**：带文字层的 PDF 直接用 `pdfbox` 抽取文本，**跳过 OCR**（更快更准）；扫描件则渲染成页图（`pypdfium2` / `pdf2image`）再逐页 OCR。
+- **提效**：OCR 前做简单预处理（灰度、去噪、可选透视矫正），能明显提升说明书小字的识别率。
+- **Embedding 同样本地化**（Ollama + `bge-m3`，1024 维，无 Key、不出网，见 4.3）。这样整条**录入链路（OCR → 切块 → 向量化 → 入库）完全在局域网内闭环**，出网只剩 Chat 问答一项。
+
+### 4.2 备选：多模态大模型直接读图
+
+原"不做多模态直接读图"的限制放宽为：**默认不用，作为 OCR 失败时的兜底重试**。若监护人为老人配置的模型支持视觉，可把说明书图片直接交给它转写为文本，不新增任何部署。成本按 token 计，且只发生在**录入**环节（低频），不在问答环节。
+
+### 4.3 Embedding 本地化：Ollama + bge-m3
+
+录入链路（OCR → 切块 → 向量化 → 入库）**完全在局域网内闭环**，不需要任何 Key。
+
+- **部署**：本机起 Ollama（`http://localhost:11434`），`ollama pull bge-m3`。Spring AI 原生提供 Ollama 的 `EmbeddingModel`，直接装配即可，无需自写客户端。
+- **配置**：
+
+```yaml
+spring:
+  ai:
+    ollama:
+      base-url: http://localhost:11434
+      embedding:
+        model: bge-m3
+    vectorstore:
+      pgvector:
+        dimensions: 1024              # 必须与 bge-m3 一致
+        distance-type: COSINE_DISTANCE
+        index-type: HNSW
+```
+
+- **维度**：`bge-m3` = **1024 维**，文档 06 的 `embedding vector(1024)` 已同步。
+- **⚠️ 换模型必须重建向量**：维度一旦确定就不能只改配置。更换 embedding 模型或维度后，需**清空 `drug_manual_chunk` 并对全部说明书重新解析**（批量走 `/medicines/{id}/manuals/{manualId}/reprocess`），否则新旧向量混在同一索引里，检索结果无意义。
+- **为什么 embedding 不做"每老人一份"**：向量空间必须全局一致，才能跨药品 / 跨老人检索与比较，因此 embedding 与老人无关 —— 本地部署后自然也不存在 Key 的问题。
+- **资源占用**：`bge-m3` 约 1.2GB，CPU 可跑（数十~数百 ms / 段）；入库是异步任务，不阻塞问答；有 GPU 时 Ollama 会自动利用。
+
+**为什么不直接用 llama.cpp**：Ollama 的底层就是 llama.cpp，等于"llama.cpp + 模型仓库 + 常驻服务 + OpenAI 兼容 API + 自动 GPU/CPU 调度"的省心版，能力上并没有损失。直接上 llama.cpp 需要自己找 GGUF 量化版、手动指定 `--embedding` 与 `--pooling`（配错则向量质量直接崩）、自己起 `llama-server` 并管进程与开机自启，且 Spring AI 没有专用 starter（只能把 OpenAI 兼容 starter 指向本地并伪造 api-key）。除非将来要把 **Chat 也本地化**并精细控制量化 / 并发 / 显存（那种场景更适合 llama.cpp 或 vLLM），当前只做 embedding 时 Ollama 更省事。
+
+**更轻的备选**：若嫌 1.2GB 太大，可让 Python 侧车服务同时承担 OCR 与 Embedding，用 ONNX 直接加载 `bge-small-zh-v1.5`（约 100MB，**512 维**，中文场景效果不错且更快）。代价是该服务需自行暴露 `/v1/embeddings` 供 Spring AI 的 OpenAI 兼容 starter 调用，且文档 06 的维度要改为 512 并重建全部分块向量。
 
 入库与问答链路：
 
 ```
 监护人上传说明书(图片/PDF) → Java 后端接收
-  → 调第三方 OCR API 转纯文本
+  → 调 OCR 服务转纯文本（本地 RapidOCR 侧车服务，或云端 API，见 4.1）
   → 按 500~1000 字 / 段落切块
-  → 调 Embedding API 生成向量
+  → 调本地 Embedding 服务生成向量（Ollama：bge-m3，1024 维，见 4.3）
   → 写入 pgvector（drug_manual_chunk）
 问答时：问题 → Embedding → pgvector Top-K 检索（带 medicineId 过滤）
   → 片段拼进 Prompt → Chat API 生成 → SSE 流式返回小程序
@@ -124,7 +181,7 @@ file: 阿莫西林说明书.jpg        // 或 .pdf
 
 Spring AI 自动装配的 `ChatModel` 是单例、读全局 `api-key`；本项目 Key 按 elderId 存于 `llm_config`，因此：
 
-- **Embedding 模型**：用一把固定的系统级 Key（说明书入库统一 embedding 模型与维度，保证向量空间一致），与老人无关；
+- **Embedding 模型**：**本地 Ollama + `bge-m3`（1024 维）**，全局唯一、与老人无关、**不需要 Key、不出网**（见 4.3）。它是全局单例 bean 即可；换模型须重建全部分块向量；
 - **Chat 问答**：在每次请求内按 elderId 取出该老人的 `{baseUrl, apiKey, model}`，动态构造 ChatClient/ChatModel（或用 OpenAI 兼容客户端覆盖请求头 `Authorization`），实现"每个老人用监护人配的 Key 调用"，不要直接注入全局单例 bean；
 - 未配置 / Key 无效：走友好提示 + 50310，不回显明文 Key。
 
