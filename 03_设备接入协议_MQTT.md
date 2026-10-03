@@ -42,7 +42,8 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 
 上行·服药事件 `.../up/event/dispense`（含错服判定字段）：
 ```json
-{ "ts":1759474500000, "planId":"p-3301", "slotNo":3, "medicineId":"m-205",
+{ "ts":1759474500000, "planId":"p-3301", "planItemId":"pi-9001",
+  "slotNo":3, "medicineId":"m-205",
   "actualDose":"1", "unit":"片", "wrongDrug":false, "onTime":true }
 ```
 
@@ -52,9 +53,14 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
   "expectedMedicine":"m-205", "actualMedicine":"m-388" }
 ```
 
-下行·同步计划 `.../down/schedule`：
+下行·同步计划 `.../down/schedule`（**一次提醒可含多种药，用 `items` 数组下发**）：
 ```json
 { "msgId":"d-001", "planId":"p-3301", "op":"UPSERT",
-  "times":["08:00","20:00"], "dose":"1", "slotNo":3, "repeat":"DAILY",
-  "alarm":{"missAfterMin":15}, "needAck":true }
+  "times":["08:00","20:00"], "repeat":"DAILY",
+  "alarm":{"missAfterMin":15},
+  "items":[ { "itemId":"pi-9001","medicineId":"m-205","slotNo":3,"dose":"1","unit":"片" },
+            { "itemId":"pi-9002","medicineId":"m-388","slotNo":5,"dose":"2","unit":"粒" } ],
+  "needAck":true }
 ```
+
+> 设备按 `items` 逐仓取药并**逐条上报**；本次提醒下所有 item 都上报才算完成，缺任一种药由后端判 MISS（见文档 06 的 2.6.1）。

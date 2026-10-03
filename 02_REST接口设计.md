@@ -119,27 +119,35 @@ POST /devices/BOXA1001/commands
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /plans | 【鉴权】创建服药计划（药品/仓位/时间/剂量/周期/报警规则） |
-| PUT | /plans/{planId} | 【鉴权】修改计划（远程调整提醒时间/剂量阈值） |
+| POST | /plans | 【鉴权】创建服药计划（**一次提醒可含多种药品**，请求体带 `items` 数组） |
+| PUT | /plans/{planId} | 【鉴权】修改计划（整体覆盖：时间/周期/报警规则与 `items` 明细一并提交） |
 | PATCH | /plans/{planId}/status | 【鉴权】启用/停用计划 |
-| DELETE | /plans/{planId} | 【鉴权】删除计划 |
-| GET | /plans?elderId= | 【鉴权】按老人查询计划列表 |
-| GET | /plans/{planId}/next-doses | 【鉴权】未来待服药时间线 |
+| DELETE | /plans/{planId} | 【鉴权】删除计划（级联删除明细） |
+| GET | /plans?elderId= | 【鉴权】按老人查询计划列表（列表项含药品概览） |
+| GET | /plans/{planId} | 【鉴权】计划详情（含 `items` 明细） |
+| GET | /plans/{planId}/next-doses | 【鉴权】未来待服药时间线（按次展开，每次列出所需药品） |
 
 计划保存后，后端将提醒规则转成设备可执行的定时任务，并通过 MQTT 下行同步给设备；提醒触发以设备本地为准，云端做兜底与统计。
 
-**示例：创建服药计划**
+> **一次提醒 = 一个计划，可含多种药**：`times` / `repeatRule` / 报警规则在计划头统一配置，药品、仓位、剂量放在 `items` 明细里（见文档 06 的 2.6 / 2.6.1）。漏服判定以"本次所有 item 都有服药记录"为准，缺任一种药即判 MISS。
+
+**示例：创建服药计划（两种药同时服用）**
 
 ```json
 POST /plans
 {
-  "elderId":"e-1001","medicineId":"m-205","slotNo":3,
-  "times":["08:00","20:00"],"dose":"1","unit":"片",
-  "repeatRule":"DAILY","missAlarmAfterMin":15,
-  "alarmRule":{"miss":true,"wrongDrug":true,"expired":true,"env":true}
+  "elderId":"e-1001","name":"早餐后",
+  "times":["08:00","20:00"],"repeatRule":"DAILY","missAlarmAfterMin":15,
+  "alarmRule":{"miss":true,"wrongDrug":true,"expired":true,"env":true},
+  "items":[
+    { "medicineId":"m-205","slotNo":3,"dose":"1","unit":"片" },
+    { "medicineId":"m-388","slotNo":5,"dose":"2","unit":"粒","note":"餐后" }
+  ]
 }
 // 响应
-{ "code":0, "data":{ "planId":"p-3301","syncState":"SYNCED_TO_DEVICE" } }
+{ "code":0, "data":{ "planId":"p-3301","syncState":"SYNCED_TO_DEVICE",
+    "items":[ { "itemId":"pi-9001","medicineId":"m-205","slotNo":3 },
+              { "itemId":"pi-9002","medicineId":"m-388","slotNo":5 } ] } }
 ```
 
 ## 7. 服药记录与依从性
