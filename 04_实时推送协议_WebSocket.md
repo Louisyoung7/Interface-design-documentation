@@ -26,7 +26,7 @@
 | type | 触发时机 | payload 要点 |
 |------|----------|--------------|
 | ALARM | 后端生成漏服/错服/过期/环境告警 | alarmId, type, level(`INFO`/`WARN`/`CRITICAL`), message, elderId, medicineId |
-| DEVICE_STATUS | 设备在线/离线（订阅 retained status） | deviceId, online, firmwareVer |
+| DEVICE_STATUS | 设备在线/离线（订阅 retained status） | deviceId, online |
 | REMINDER | 临近服药计划提醒（可选，监护端提醒） | planId, planTime, **`medicines[]`**（一次提醒可含多种药） |
 | AI_STREAM | AI 流式回答分片（备选传输通道） | sessionId, delta |
 

@@ -106,11 +106,9 @@ POST /auth/login
 | POST | /devices/register | 【鉴权】设备注册绑定到老人（准入审核在 Web 后台完成，小程序端仅提交申请 / 查看状态） |
 | GET | /devices | 【鉴权】我监护的老人设备列表（含在线状态） |
 | GET | /devices/{deviceId} | 【鉴权】设备详情与最新遥测 |
-| GET | /devices/{deviceId}/status | 【鉴权】实时状态（在线/仓门/固件版本） |
+| GET | /devices/{deviceId}/status | 【鉴权】实时状态（在线/仓门） |
 | POST | /devices/{deviceId}/commands | 【鉴权】下发控制命令（蜂鸣/校准/解锁/重启），转 MQTT QoS1 |
 | GET | /devices/{deviceId}/events | 【鉴权】设备事件流水（上下线、心跳异常） |
-
-> 固件 OTA 触发属管理员职责，归 Web 管理后台，不在小程序接口内。
 
 **示例：下发控制命令**
 
