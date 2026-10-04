@@ -10,7 +10,8 @@
 | Base URL | `http://{后端主机内网IP}:8080/medbox/api/v1`（局域网内网地址，见文档 01） |
 | 请求体格式 | `application/json; charset=utf-8` |
 | 认证方式 | Header: `Authorization: Bearer {JWT}`（设备端走 MQTT 用户名密码 / 一机一密，不走此通道） |
-| 时间格式 | ISO-8601 UTC，如 `2026-10-03T07:04:00Z`；前端本地化展示 |
+| 时间格式 | ISO-8601 **UTC**，如 `2026-10-03T07:04:00Z`；前端本地化展示 |
+| 时区口径 | 除服药计划的 `times`（见第 6 章）外，**所有时间一律 UTC**。`med_plan.times` 存**设备本地墙钟时间**（如 `"08:00"`），时区取 `device.timezone`（默认 `Asia/Shanghai`）；服务端判定时换算成 UTC 后再比较 |
 | 幂等 | 写操作支持 Header: `X-Request-Id`（UUID）去重 |
 | 分页 | query 参数 `page`(从 1 起)、`size`(默认 20, 上限 100)；响应返回 `total` |
 | 版本 | URI 版本化 `/v1`；向后兼容字段追加不升版本 |
@@ -37,10 +38,25 @@
 | 40102 | 401 | 账号或密码错误 |
 | 40301 | 403 | 无权限（越权访问他人数据 / 设备） |
 | 40401 | 404 | 资源不存在 |
+| 40302 | 403 | 监护关系未生效（关系仍为 PENDING，老人端尚未确认） |
 | 40901 | 409 | 状态冲突（如设备离线无法下发命令） |
 | 42901 | 429 | 触发限流 |
 | 50000 | 500 | 服务端内部错误 |
 | 50310 | 503 | AI 大模型服务暂不可用 / API Key 无效 |
+
+### 1.3 权限默认规则
+
+除接口上显式标注【鉴权·仅监护人】等限定外，按下述默认规则校验（角色定义见文档 01 第 3 章）：
+
+| 角色 | 默认权限 |
+|------|----------|
+| 老人本人 | **只读本人数据**：本人计划、记录、告警、本人设备状态、AI 问答；不可改计划 / 配置 Key |
+| 监护人 / 子女 | 对**已生效（ACTIVE）监护关系**下的老人：**可读可写**（计划、药品、仓位、告警处理、阈值、AI Key 配置） |
+| 社区护理人员 | 所辖老人数据**只读** + **处理告警** + **导出记录**；不可改计划与药品 |
+| 家庭医生 | **制定 / 修改服药计划** + **维护药品禁忌知识库** + 查看依从性报告；不处理告警导出 |
+| 设备端 | 仅 MQTT 通道（不走 REST，见文档 03） |
+
+**通用校验顺序**：① 是否登录（40101）→ ② 对目标 `elderId` / `deviceId` 是否有监护 / 管理关系（40301）→ ③ 关系是否已生效（40302）→ ④ 该角色是否具备此操作权限（40301）。越权一律 40301，不区分"资源不存在"与"无权限"，避免资源枚举。
 
 ## 2. 核心数据模型
 
@@ -57,9 +73,13 @@
 | POST | /auth/login | **账号密码登录**（手机号 / 用户名 + 密码），返回 JWT |
 | POST | /auth/refresh | 刷新 Token |
 | GET | /users/me | 【鉴权】当前用户资料与角色 |
-| POST | /users/{elderId}/guardians | 【鉴权】老人绑定监护关系（需老人端授权码） |
-| DELETE | /users/guardians/{relationId} | 【鉴权】解除监护关系 |
+| POST | /users/{elderId}/guardians | 【鉴权·监护人发起】申请绑定监护关系（创建 `PENDING` 关系） |
+| GET | /users/guardians/pending | 【鉴权·老人端】我待确认的监护请求列表 |
+| PATCH | /users/guardians/{relationId}/accept | 【鉴权·老人端】确认监护请求（置 `ACTIVE`） |
+| DELETE | /users/guardians/{relationId} | 【鉴权】拒绝 / 解除监护关系（老人端拒绝、任一方解除） |
 | GET | /users/{elderId}/profile | 【鉴权】老人基础信息（监护人可见） |
+
+> **监护绑定为两步**：① 监护人发起申请 → 关系 `PENDING`；② 老人端在"待确认"列表中确认 → 关系 `ACTIVE`，监护人才真正获得读写权限。未确认前访问该老人数据返回 **40302**。
 
 > **认证方式约定**：小程序端主登录方式为**账号 + 密码**，**不再使用短信验证码**（免去短信网关、验证码下发与存储）。
 >
@@ -86,7 +106,7 @@ POST /auth/login
 | POST | /devices/register | 【鉴权】设备注册绑定到老人（准入审核在 Web 后台完成，小程序端仅提交申请 / 查看状态） |
 | GET | /devices | 【鉴权】我监护的老人设备列表（含在线状态） |
 | GET | /devices/{deviceId} | 【鉴权】设备详情与最新遥测 |
-| GET | /devices/{deviceId}/status | 【鉴权】实时状态（在线/电量/仓门/固件版本） |
+| GET | /devices/{deviceId}/status | 【鉴权】实时状态（在线/仓门/固件版本） |
 | POST | /devices/{deviceId}/commands | 【鉴权】下发控制命令（蜂鸣/校准/解锁/重启），转 MQTT QoS1 |
 | GET | /devices/{deviceId}/events | 【鉴权】设备事件流水（上下线、心跳异常） |
 
@@ -106,8 +126,8 @@ POST /devices/BOXA1001/commands
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /medicines | 【鉴权】新建/更新药品档案（含禁忌、储存条件） |
-| GET | /medicines | 【鉴权】药品字典/我的药品列表（分页、搜索） |
+| POST | /medicines | 【鉴权】新建/更新药品档案（含禁忌、储存条件）；不传 `ownerElderId` 即公共字典 |
+| GET | /medicines | 【鉴权】药品字典 / 我的药品列表（分页、搜索）；可见范围 = **公共药品（`ownerElderId` 为空）+ 我监护老人的私有药品** |
 | GET | /medicines/{medicineId} | 【鉴权】药品详情 |
 | GET | /devices/{deviceId}/compartments | 【鉴权】设备各仓位库存与有效期 |
 | PUT | /devices/{deviceId}/compartments/{slotNo} | 【鉴权】配置仓位：绑定药品、数量、有效期 |
@@ -130,6 +150,8 @@ POST /devices/BOXA1001/commands
 计划保存后，后端将提醒规则转成设备可执行的定时任务，并通过 MQTT 下行同步给设备；提醒触发以设备本地为准，云端做兜底与统计。
 
 > **一次提醒 = 一个计划，可含多种药**：`times` / `repeatRule` / 报警规则在计划头统一配置，药品、仓位、剂量放在 `items` 明细里（见文档 06 的 2.6 / 2.6.1）。漏服判定以"本次所有 item 都有服药记录"为准，缺任一种药即判 MISS。
+>
+> **两处口径**：① `times` 为**设备本地墙钟时间**（时区取 `device.timezone`，默认 `Asia/Shanghai`），不是 UTC；② 漏服容忍时长优先级为 **`missAlarmAfterMin`（计划级）> `alarm_setting.missTolerateMin`（老人级）> 系统默认 15 分钟**，计划级留空即沿用上一级。
 
 **示例：创建服药计划（两种药同时服用）**
 
@@ -187,4 +209,5 @@ POST /plans
 |------|------|------|
 | GET | /env/realtime?deviceId= | 【鉴权】最新温湿光读数 |
 | GET | /env/history?deviceId=&from=&to=&interval= | 【鉴权】历史曲线（小程序图表） |
-| PUT | /env/threshold?deviceId=&medicineId= | 【鉴权】按药品储存条件设置环境阈值 |
+
+> **环境阈值按老人统一配置**（不再按药品单独设置），走 `PUT /alarm-settings?elderId=` 的 `envThreshold` 字段（见第 8 章）；判定口径见文档 01 的 5.4。

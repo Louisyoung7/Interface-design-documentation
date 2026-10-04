@@ -52,10 +52,15 @@ PUT /ai/config?elderId=e-1001
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /ai/chat | 【鉴权】同步问答（question + 可选 elderId/deviceId 上下文） |
+| POST | /ai/chat | 【鉴权】同步问答（question + 可选 elderId/deviceId/sessionId 上下文） |
 | POST | /ai/chat/stream | 【鉴权】流式问答（SSE），长回答逐字输出 |
+| POST | /ai/sessions | 【鉴权】创建会话，返回 `sessionId` |
 | GET | /ai/sessions?elderId= | 【鉴权】历史会话列表 |
 | GET | /ai/sessions/{sessionId}/messages | 【鉴权】会话消息明细 |
+| PATCH | /ai/sessions/{sessionId} | 【鉴权】重命名会话（可选） |
+| DELETE | /ai/sessions/{sessionId} | 【鉴权】删除会话及其消息 |
+
+> **会话规则**：`sessionId` 可省略 —— 首次调用 `/ai/chat`（或 `/ai/chat/stream`）时若未传 `sessionId`，后端**隐式创建**一个新会话并在响应中返回 `sessionId`，前端据此续接同一轮对话。会话归属 `elderId`，切换老人即切换会话列表。
 
 > 老人端不做 API Key 相关操作；老人发起提问时，后端按 elderId 取出监护人配好的 Key 调用大模型。
 
@@ -67,6 +72,7 @@ POST /ai/chat
   "elderId":"e-1001", "scene":"MEDICINE_QUERY" }
 
 { "code":0, "data":{
+    "sessionId":"s-7001",
     "answer":"库存显示该阿莫西林有效期至 2027-04，未过期可正常服用；头孢与阿莫西林同属β-内酰胺类，过敏史需注意……（仅供参考，遵医嘱）",
     "citations":["库存#slot3 有效期2027-04","知识库#beta-lactam"],
     "disclaimer":"本建议仅供参考，用药请遵医嘱。" } }
@@ -176,6 +182,31 @@ spring:
 | 非结构化 | 说明书正文、禁忌、不良反应、相互作用 | PostgreSQL + pgvector 向量列 | RAG 语义检索 Top-K 片段 |
 
 问答时后端把两者拼进同一个 Prompt：**库存有效期 + 禁忌（结构化）+ 召回的说明书片段（向量）+ 用户问题**，再交给大模型生成，最后注入 `disclaimer`。"是否过期"以库存表有效期字段为准，说明书片段只用于解释"禁忌 / 相互作用"。
+
+### 5.1 RAG 检索路径（问题 → 定位药品 → 带过滤召回）
+
+**不能一上来就全库向量检索** —— 那样会召回别人的或其他药品的片段。固定四步：
+
+1. **锁定老人范围**：用请求中的 `elderId` 查出该老人**当前在库 / 在服的药品集合**（`compartment` + `med_plan_item`），这是召回的硬边界。
+2. **定位目标药品 `medicineId`**（依次尝试，命中即停）：
+   - 请求显式传了 `medicineId` → 直接用；
+   - 否则用**在库药品名做字符串包含 / 模糊匹配**（"阿莫西林还有半年过期能吃吗" → 命中"阿莫西林胶囊"）；
+   - 仍匹配不到 → **不猜**，把范围放宽为"该老人全部在库药品"，避免答非所问。
+3. **带过滤的向量召回**（Top-K 建议 4~6，余弦距离）：
+
+```sql
+SELECT chunk_id, medicine_id, content, page,
+       embedding <=> :qvec AS distance
+FROM drug_manual_chunk
+WHERE medicine_id = ANY(:medicineIds)              -- 第 2 步定位到的药品
+  AND (elder_id = :elderId OR elder_id IS NULL)    -- 私有 + 公共说明书
+ORDER BY distance
+LIMIT 5;
+```
+
+4. **拼装与兜底**：结构化事实（库存 / 有效期 / 禁忌）+ 召回片段（带 `chunk_id` 便于溯源）+ 问题 → Chat。**若召回为空或最近距离仍低于相似度阈值**，只用结构化数据作答，并在 `disclaimer` 中说明"未在说明书中找到依据"，避免模型凭空编造。
+
+> 只有**文档的写入（录入）环节**才需要拿全部说明书；问答环节永远先收敛 `medicineIds` 再检索。
 
 ## 6. 与"每老人一份 Key"的结合（关键实现点）
 

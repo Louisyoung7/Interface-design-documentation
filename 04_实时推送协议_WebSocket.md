@@ -1,6 +1,6 @@
 # 04 · 实时推送协议（WebSocket，后端 → 小程序）
 
-> 用途：告警实时推送、设备在线状态、实时监测看板　|　局域网明文　|　版本 V1.3
+> 用途：告警实时推送、设备在线状态、实时监测看板　|　局域网明文　|　版本 V1.4
 
 ## 1. 连接与鉴权
 
@@ -25,15 +25,25 @@
 
 | type | 触发时机 | payload 要点 |
 |------|----------|--------------|
-| ALARM | 后端生成漏服/错服/过期/环境告警 | alarmId, type, level, message, elderId |
-| DEVICE_STATUS | 设备在线/离线（订阅 retained status） | deviceId, online, battery |
-| REMINDER | 临近服药计划提醒（可选，监护端提醒） | planId, planTime, medicineName |
+| ALARM | 后端生成漏服/错服/过期/环境告警 | alarmId, type, level(`INFO`/`WARN`/`CRITICAL`), message, elderId, medicineId |
+| DEVICE_STATUS | 设备在线/离线（订阅 retained status） | deviceId, online, firmwareVer |
+| REMINDER | 临近服药计划提醒（可选，监护端提醒） | planId, planTime, **`medicines[]`**（一次提醒可含多种药） |
 | AI_STREAM | AI 流式回答分片（备选传输通道） | sessionId, delta |
 
 **示例：推送漏服告警**
 ```json
 { "type":"ALARM","id":"evt-9a1c","topic":"elder:e-1001",
   "ts":1759474520000,
-  "payload":{ "alarmId":"a-5001","type":"MISS","level":"HIGH",
-    "message":"阿莫西林 08:00 计划服药未按时服用","medicineName":"阿莫西林" } }
+  "payload":{ "alarmId":"a-5001","type":"MISS","level":"WARN",
+    "message":"08:00 计划服药未按时服用：缺 阿莫西林、维生素D",
+    "medicineIds":["m-205","m-388"] } }
+```
+
+**示例：推送服药提醒（多种药）**
+```json
+{ "type":"REMINDER","id":"evt-9a1d","topic":"elder:e-1001",
+  "ts":1759474500000,
+  "payload":{ "planId":"p-3301","planTime":"2026-10-04T00:00:00Z",
+    "medicines":[ { "itemId":"pi-9001","medicineId":"m-205","medicineName":"阿莫西林","dose":"1","unit":"片","slotNo":3 },
+                  { "itemId":"pi-9002","medicineId":"m-388","medicineName":"维生素D","dose":"2","unit":"粒","slotNo":5 } ] } }
 ```
