@@ -127,9 +127,9 @@ POST /devices/BOXA1001/commands
 | POST | /medicines | 【鉴权】新建/更新药品档案（含禁忌、储存条件）；不传 `ownerElderId` 即公共字典 |
 | GET | /medicines | 【鉴权】药品字典 / 我的药品列表（分页、搜索）；可见范围 = **公共药品（`ownerElderId` 为空）+ 我监护老人的私有药品** |
 | GET | /medicines/{medicineId} | 【鉴权】药品详情 |
-| GET | /devices/{deviceId}/compartments | 【鉴权】设备各仓位库存与有效期 |
-| PUT | /devices/{deviceId}/compartments/{slotNo} | 【鉴权】配置仓位：绑定药品、数量、有效期 |
-| POST | /devices/{deviceId}/compartments/{slotNo}/in | 【鉴权】补药入库（增加库存） |
+| GET | /devices/{deviceId}/compartments | 【鉴权】设备各仓位库存、生产日期与有效期 |
+| PUT | /devices/{deviceId}/compartments/{slotNo} | 【鉴权】配置仓位：绑定药品、数量、**生产日期与有效期（手动录入）** |
+| POST | /devices/{deviceId}/compartments/{slotNo}/in | 【鉴权】补药入库（增加库存，可同时更新生产日期 / 有效期） |
 | DELETE | /devices/{deviceId}/compartments/{slotNo}/bind | 【鉴权】解绑仓位 |
 | GET | /devices/{deviceId}/expiring | 【鉴权】临期/过期清单（提前 N 天预警） |
 
@@ -196,8 +196,8 @@ POST /plans
 | type | 触发来源 | 说明 |
 |------|----------|------|
 | MISS | 后端判定 | 计划时间+容忍时长内未收到该计划服药事件 |
-| WRONG_DRUG | 设备上报 | RFID/识别模块判定取药与计划仓位不匹配 |
-| EXPIRED | 设备/后端 | 仓位内药品到达有效期（提前预警+到期告警） |
+| WRONG_DRUG | 设备上报 | 实际取药仓位与计划仓位不匹配 |
+| EXPIRED | 后端判定 | 按手动录入的 `expiryDate` 扫描：临期预警 + 到期告警 |
 | ENV | 设备上报 | 温度/湿度/光照超出该药品储存阈值 |
 | DEVICE_OFFLINE | 后端判定 | 心跳超时，设备离线超阈值 |
 
