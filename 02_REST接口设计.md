@@ -120,6 +120,43 @@ POST /devices/BOXA1001/commands
 { "code":0, "data":{ "commandId":"c-7f21", "state":"PENDING" } }
 ```
 
+### 4.1 设备抓拍图片（摄像头留证，7 天过期）
+
+摄像头识别结果的**结构化数据走 MQTT**（见文档 03 第 4 章）；**图片单独走 HTTP multipart 直传后端**。
+
+> **当前摄像头默认全量抓拍：正常服药也拍、每次服药都拍**，后端按全量接收。摄像头侧的算法与抓拍策略不由后端 / 小程序团队负责，后端只负责"收下并管好"。
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | /devices/{deviceId}/captures | 【**设备鉴权**】摄像头上传抓拍图片（multipart），返回 `captureId` 与 `expireAt` |
+| GET | /captures?elderId=&reason=&from=&to= | 【鉴权】抓拍列表（仅元数据，不含文件流） |
+| GET | /captures/{captureId} | 【鉴权】抓拍详情 |
+| GET | /captures/{captureId}/file?token= | 【鉴权】读取图片流（供小程序 `<image src>` 使用，校验监护关系） |
+| DELETE | /captures/{captureId} | 【鉴权·监护人】手动提前删除 |
+
+**示例：摄像头上传抓拍**
+
+```
+POST /devices/BOXA1001/captures
+Content-Type: multipart/form-data
+file: capture.jpg
+reason=WRONG_DRUG & medicineId=m-205 & planId=p-3301
+& confidence=0.62 & capturedAt=2026-10-04T00:04:00Z
+
+// 响应
+{ "code":0, "data":{ "captureId":"cap-8801","expireAt":"2026-10-11T00:04:00Z" } }
+```
+
+**约定**：
+
+- **`reason` 取值**：`NORMAL` 正常服药抓拍（**当前占绝大多数**，摄像头全量拍）、`WRONG_DRUG` 错服、`LOW_CONFIDENCE` 置信度低于阈值、`MANUAL` 监护人主动请求。列表接口可按 `reason=WRONG_DRUG` 过滤只看异常。
+- **去重建议**：同一服药事件只保留 1 张（摄像头侧连拍时后端可按 `planId + capturedAt` 时间窗去重，或由摄像头侧控制）。
+- **上传侧鉴权走设备身份，不走用户 JWT**：用注册时下发的 `deviceSecret` 做 HMAC 签名，Header 携带 `X-Device-Id` / `X-Device-Sign` / `X-Timestamp`，后端校验签名与时间窗；上传接口只允许该设备绑定老人下的写入。
+- **下载侧鉴权**：必须是**老人本人**或其 **ACTIVE 监护人**，其余角色（护理 / 医生）一律 40301 —— 比 1.3 的默认规则更严格。
+- **为什么用 query 传 token**：小程序 `<image src>` 无法携带自定义 Header，故用后端签发的**短期 `fileToken`**（5 分钟有效）拼接在 URL 上；**不要直接把长期 JWT 放 URL**（会落进日志与浏览器历史）。
+- **过期清理（已读 / 未读分开算）**：`expire_at = MIN(captured_at + 30 天, viewed_at + 7 天)` —— **未读最长保留 30 天**，**首次查看后再保留 7 天**（查看只会让过期提前，不会延长）。首次调用 `/captures/{id}/file` 读取图片流时后端自动写入 `viewed_at` 并重算 `expire_at`；天数可配 `medbox.capture.retention-days-unread`（30）/ `retention-days-read`（7）。后端每日定时任务删除到期文件与记录，监护人可手动提前删除。
+- **存储**：图片存后端主机本地目录，不落库、不暴露真实路径（表结构见文档 06 的 2.12）。
+
 ## 5. 药品与库存管理
 
 | 方法 | 路径 | 说明 |
