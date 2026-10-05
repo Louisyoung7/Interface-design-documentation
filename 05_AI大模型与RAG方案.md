@@ -1,6 +1,6 @@
 # 05 · AI 大模型接入与 RAG 方案（Spring Boot + Spring AI）
 
-> 后端：Spring Boot　|　数据库：PostgreSQL（pgvector，建表见文档 06）　|　**OCR 与 Embedding：本地部署（不出网、无需 Key）**　|　**Chat 问答：OpenAI 兼容 API，API Key 由监护人代配**　|　版本 V1.4
+> 后端：Spring Boot　|　数据库：PostgreSQL（pgvector，建表见文档 06）　|　**OCR 与 Embedding：本地部署（不出网、无需 Key）**　|　**Chat 问答：OpenAI 兼容 API，API Key 由监护人代配**　|　版本 V1.5
 
 ## 1. 接入方式：Java 后端直连大模型
 
