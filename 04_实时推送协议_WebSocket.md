@@ -26,9 +26,11 @@
 | type | 触发时机 | payload 要点 |
 |------|----------|--------------|
 | ALARM | 后端生成漏服/错服/过期/环境告警 | alarmId, type, level(`INFO`/`WARN`/`CRITICAL`), message, elderId, medicineId |
-| DEVICE_STATUS | 设备在线/离线（订阅 retained status） | deviceId, online |
+| DEVICE_STATUS | 设备在线/离线（订阅 retained status） | deviceId, deviceType(`MAIN`/`TEMP_HUMI`/`LIGHT`/`CAMERA`), online, parentDeviceId（子设备时） |
 | REMINDER | 临近服药计划提醒（可选，监护端提醒） | planId, planTime, **`medicines[]`**（一次提醒可含多种药） |
 | AI_STREAM | AI 流式回答分片（备选传输通道） | sessionId, delta |
+
+> **DEVICE_STATUS 覆盖子设备**：药箱主控（`MAIN`）离线/上线各推一条；**传感器子设备**没有自己的 MQTT 连接，其在线状态由主控通过 `up/sensor/heartbeat` 汇总上报（见文档 03 第 3 章），后端据此推送子设备的 `DEVICE_STATUS`（带 `deviceType` 与 `parentDeviceId`）。子设备离线**不生成 DEVICE_OFFLINE 告警**，仅在设备详情页标注。
 
 **示例：推送漏服告警**
 ```json

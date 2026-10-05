@@ -35,9 +35,10 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 
 | 方向 | Topic | QoS | 说明 |
 |------|-------|-----|------|
-| 设备→云 | `.../up/telemetry` | 0/1 | 环境遥测（温湿度光照，周期上报） |
-| 设备→云 | `.../up/event/dispense` | 1 | 服药事件（药品、剂量、时间、摄像头识别置信度） |
-| 设备→云 | `.../up/event/error` | 1 | 错服、门超时、硬件故障等异常事件 |
+| 设备→云 | `.../up/telemetry` | 0/1 | 环境遥测（**每个传感器各发一条**，只带自己负责的字段，见第 3 章） |
+| 设备→云 | `.../up/event/dispense` | 1 | 服药事件（药品、剂量、时间、摄像头识别置信度；**拿错药也走这里**，用 `wrongDrug=true`） |
+| 设备→云 | `.../up/event/error` | 1 | **设备侧异常**：门超时、识别失败、硬件故障等（不用于错服，见第 3 章口径说明） |
+| 设备→云 | `.../up/sensor/heartbeat` | 0 | 主控周期性上报各传感器子设备在线状态（子设备无遗嘱，判离线靠它，见第 3 章） |
 | 设备→云 | `.../up/inventory` | 1 | 库存变更（按药品的数量变化；生产日期与有效期由小程序录入，不从设备上报） |
 | 设备→云 | **`.../up/ack`** | 1 | **下行消息回执**（计划 / 命令的 `msgId` 处理结果） |
 | 设备→云 | `.../status (LWT)` | 0 | 在线/离线状态（retained） |
@@ -48,13 +49,21 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 
 > **上行消息统一带 `msgId`**，服务端按 `msgId` 幂等去重（同一 `msgId` 重复到达只处理一次）。
 
-上行·环境遥测 `.../up/telemetry`（**带 `sensorId` 标明是哪个传感器**）：
+上行·环境遥测 `.../up/telemetry`（**每个传感器各发一条**，只带自己负责的字段）：
+
 ```json
+// 温湿度传感器（TEMP_HUMI）
 { "msgId":"BOXA1001-000123", "ts":1759474487000,
   "sensorId":"BOXA1001-S-TH01",
-  "temperature":24.6, "humidity":52.1, "lux":120 }
+  "temperature":24.6, "humidity":52.1 }
+
+// 光照传感器（LIGHT）
+{ "msgId":"BOXA1001-000124", "ts":1759474488000,
+  "sensorId":"BOXA1001-S-LX01",
+  "lux":120 }
 ```
-`sensorId` = 该传感器子设备的 `device_id`（见文档 06 的 2.3）；主控转发时原样带上，后端据此区分温湿度 / 光照等不同来源并记录在线状态。
+
+`sensorId` = 该传感器子设备的 `device_id`（见文档 06 的 2.3）；主控转发时原样带上，后端据此区分来源、只更新对应列。
 
 上行·服药事件 `.../up/event/dispense`（含错服判定与摄像头识别字段）：
 ```json
@@ -67,13 +76,32 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 
 > 药箱**不划分仓位**，因此没有 `slotNo`：是否拿对药由摄像头**识别药品**判定（`medicineId` 是否等于计划药品），而不是比对格子。
 
-字段说明：`confidence` = 摄像头识别置信度（低于阈值时置 `wrongDrug` 待复核）；`source` = `CAMERA` 摄像头识别 / `MANUAL` 手工补录；`imageId` = 本次服药的抓拍图片ID（对应 `capture.capture_id`）。**当前摄像头全量抓拍**，因此正常服药的 `imageId` 也不为空。
+字段说明：`confidence` = 摄像头识别置信度。**低于阈值时不要直接判错服**（会误报），抓拍标记为 `LOW_CONFIDENCE` 交由监护人人工复核；只有识别结果与计划药品**明确不符**才置 `wrongDrug=true`；`source` = `CAMERA` 摄像头识别 / `MANUAL` 手工补录；`imageId` = 本次服药的抓拍图片ID（对应 `capture.capture_id`）。**当前摄像头全量抓拍**，因此正常服药的 `imageId` 也不为空。
 
-上行·错服异常 `.../up/event/error`：
+> **错服只走 `dispense`，不走 `error`**：两个通道的分工是 —— `up/event/dispense` = **服药事件**（无论拿对拿错，结果用 `wrongDrug` 表达，正常流程）；`up/event/error` = **设备侧异常**（门超时、识别失败、硬件故障），属于设备自己出问题、不是用户拿错药。这样后端只需在一个地方生成 WRONG_DRUG 告警，避免重复告警。
+
+上行·设备异常 `.../up/event/error`（**仅设备侧异常**）：
 ```json
-{ "msgId":"BOXA1001-000125", "ts":1759474512000, "type":"WRONG_DRUG",
-  "expectedMedicine":"m-205", "actualMedicine":"m-388" }
+{ "msgId":"BOXA1001-000125", "ts":1759474512000, "type":"DOOR_TIMEOUT",
+  "detail":"仓门开启超过 60s 未关闭" }
 ```
+`type` 取值：`DOOR_TIMEOUT` 门超时 / `CAMERA_FAILED` 识别失败 / `HW_FAULT` 硬件故障。**错服用 `dispense.wrongDrug`，不要放这里。**
+
+上行·库存变更 `.../up/inventory`（按药品，不按仓位）：
+```json
+{ "msgId":"BOXA1001-000127", "ts":1759474530000,
+  "medicineId":"m-205", "quantity":12, "delta":-1 }
+```
+`quantity` = 变更后库存，`delta` = 本次变化量（服药 -1 / 补药 +n）。**生产日期与有效期不从设备上**，由小程序录入（见文档 02 第 5 章）。
+
+上行·传感器心跳 `.../up/sensor/heartbeat`（主控周期性汇总子设备状态）：
+```json
+{ "msgId":"BOXA1001-000128", "ts":1759474540000,
+  "sensors":[ { "sensorId":"BOXA1001-S-TH01","online":true },
+              { "sensorId":"BOXA1001-S-LX01","online":true },
+              { "sensorId":"BOXA1001-S-CAM01","online":false } ] }
+```
+因为**只有主控有 MQTT 连接**，子设备没有自己的遗嘱消息，故由主控每 60s 汇总上报一次；后端据此更新各子设备的 `last_heartbeat` 与 `online_state`，超时未上报即判该传感器离线（不生成 DEVICE_OFFLINE 告警，或按配置单独提示）。
 
 上行·下行回执 `.../up/ack`（对应下行消息中的 `msgId`）：
 ```json

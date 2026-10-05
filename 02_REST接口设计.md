@@ -37,9 +37,9 @@
 | 40101 | 401 | 未登录 / Token 过期 |
 | 40102 | 401 | 账号或密码错误 |
 | 40301 | 403 | 无权限（越权访问他人数据 / 设备） |
-| 40401 | 404 | 资源不存在 |
 | 40302 | 403 | 监护关系未生效（关系仍为 PENDING，老人端尚未确认） |
-| 40901 | 409 | 状态冲突（如设备离线无法下发命令） |
+| 40401 | 404 | 资源不存在 |
+| 40901 | 409 | 状态冲突（如设备离线无法下发命令、药品仍被库存引用无法删除） |
 | 42901 | 429 | 触发限流 |
 | 50000 | 500 | 服务端内部错误 |
 | 50310 | 503 | AI 大模型服务暂不可用 / API Key 无效 |
@@ -103,12 +103,15 @@ POST /auth/login
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /devices/register | 【鉴权】设备注册绑定到老人（准入审核在 Web 后台完成，小程序端仅提交申请 / 查看状态） |
+| POST | /devices/register | 【鉴权】药箱注册并绑定到老人（**本期注册即生效**，不做准入审核；传感器子设备随主控一起登记，无需单独注册） |
 | GET | /devices | 【鉴权】我监护的老人设备列表（含在线状态） |
 | GET | /devices/{deviceId} | 【鉴权】设备详情与最新遥测 |
 | GET | /devices/{deviceId}/status | 【鉴权】实时状态（在线/仓门） |
 | POST | /devices/{deviceId}/commands | 【鉴权】下发控制命令（蜂鸣/校准/解锁/重启），转 MQTT QoS1 |
 | GET | /devices/{deviceId}/events | 【鉴权】设备事件流水（上下线、心跳异常） |
+| GET | /devices/{deviceId}/sensors | 【鉴权】该药箱下的传感器子设备列表（温湿度 / 光照 / 摄像头，含各自在线状态） |
+
+> `deviceId` 指**药箱主控**（`device_type=MAIN`）；传感器 / 摄像头是其子设备，通过 `parent_device_id` 关联、在 `GET /devices/{deviceId}/sensors` 中列出（见文档 06 的 2.3）。子设备无独立 MQTT 连接，其在线状态由主控周期上报（见文档 03 第 3 章 `up/sensor/heartbeat`）。
 
 **示例：下发控制命令**
 
@@ -120,7 +123,7 @@ POST /devices/BOXA1001/commands
 { "code":0, "data":{ "commandId":"c-7f21", "state":"PENDING" } }
 ```
 
-### 4.1 设备抓拍图片（摄像头留证，7 天过期）
+### 4.1 设备抓拍图片（摄像头留证，已读 7 天 / 未读 30 天过期）
 
 摄像头识别结果的**结构化数据走 MQTT**（见文档 03 第 4 章）；**图片单独走 HTTP multipart 直传后端**。
 
@@ -128,7 +131,7 @@ POST /devices/BOXA1001/commands
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | /devices/{deviceId}/captures | 【**设备鉴权**】摄像头上传抓拍图片（multipart），返回 `captureId` 与 `expireAt` |
+| POST | /devices/{deviceId}/captures | 【**设备鉴权**】摄像头上传抓拍图片（multipart），返回 `captureId` 与 `expireAt`。`deviceId` 填**摄像头子设备自己的 deviceId**，后端按 `parent_device_id` 反查所属药箱与老人 |
 | GET | /captures?elderId=&reason=&from=&to= | 【鉴权】抓拍列表（仅元数据，不含文件流） |
 | GET | /captures/{captureId} | 【鉴权】抓拍详情 |
 | GET | /captures/{captureId}/file?token= | 【鉴权】读取图片流（供小程序 `<image src>` 使用，校验监护关系） |
@@ -137,7 +140,7 @@ POST /devices/BOXA1001/commands
 **示例：摄像头上传抓拍**
 
 ```
-POST /devices/BOXA1001/captures
+POST /devices/BOXA1001-S-CAM01/captures     // 摄像头子设备自己的 deviceId
 Content-Type: multipart/form-data
 file: capture.jpg
 reason=WRONG_DRUG & medicineId=m-205 & planId=p-3301
@@ -164,7 +167,7 @@ reason=WRONG_DRUG & medicineId=m-205 & planId=p-3301
 | POST | /medicines | 【鉴权】新建/更新药品档案（含禁忌、储存条件）；不传 `ownerElderId` 即公共字典 |
 | GET | /medicines | 【鉴权】药品字典 / 我的药品列表（分页、搜索）；可见范围 = **公共药品（`ownerElderId` 为空）+ 我监护老人的私有药品** |
 | GET | /medicines/{medicineId} | 【鉴权】药品详情 |
-| GET | /devices/{deviceId}/sensors | 【鉴权】该药箱下的传感器子设备列表（温湿度 / 光照 / 摄像头，含各自在线状态） |
+| DELETE | /medicines/{medicineId} | 【鉴权】删除药品档案（**无任何药箱库存引用时才允许**，否则 40901） |
 | GET | /devices/{deviceId}/stocks | 【鉴权】药箱库存清单（按药品：数量、生产日期、有效期） |
 | PUT | /devices/{deviceId}/stocks/{medicineId} | 【鉴权】录入 / 更新某药品库存：数量、**生产日期与有效期（手动录入）** |
 | POST | /devices/{deviceId}/stocks/{medicineId}/in | 【鉴权】补药入库（增加库存，可同时更新生产日期 / 有效期） |
@@ -238,7 +241,7 @@ POST /plans
 | MISS | 后端判定 | 计划时间+容忍时长内未收到该计划服药事件 |
 | WRONG_DRUG | 设备上报 | 摄像头识别的实际药品 ≠ 计划药品 |
 | EXPIRED | 后端判定 | 按手动录入的 `expiryDate` 扫描：临期预警 + 到期告警 |
-| ENV | 设备上报 | 温度/湿度/光照超出该药品储存阈值 |
+| ENV | 设备上报 | 温度/湿度/光照超出**该老人统一配置的 `envThreshold`**（不按药品细分，见文档 01 的 5.4） |
 | DEVICE_OFFLINE | 后端判定 | 心跳超时，设备离线超阈值 |
 
 ## 9. 环境监测
