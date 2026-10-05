@@ -44,6 +44,6 @@
 { "type":"REMINDER","id":"evt-9a1d","topic":"elder:e-1001",
   "ts":1759474500000,
   "payload":{ "planId":"p-3301","planTime":"2026-10-04T00:00:00Z",
-    "medicines":[ { "itemId":"pi-9001","medicineId":"m-205","medicineName":"阿莫西林","dose":"1","unit":"片","slotNo":3 },
-                  { "itemId":"pi-9002","medicineId":"m-388","medicineName":"维生素D","dose":"2","unit":"粒","slotNo":5 } ] } }
+    "medicines":[ { "itemId":"pi-9001","medicineId":"m-205","medicineName":"阿莫西林","dose":"1","unit":"片" },
+                  { "itemId":"pi-9002","medicineId":"m-388","medicineName":"维生素D","dose":"2","unit":"粒" } ] } }
 ```

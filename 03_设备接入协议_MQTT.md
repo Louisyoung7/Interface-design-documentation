@@ -14,6 +14,7 @@
 | Retained | status（在线状态）retained=true，订阅即得最新态 |
 | 后端接入方式 | Java 后端以订阅方身份连到 EMQX（Spring Integration MQTT / Eclipse Paho），订阅 `.../up/#` 消费上报、向 `.../down/#` 发布下行 |
 | EMQX 认证 | 局域网阶段用内置数据库 / HTTP 认证或用户名密码 + clientId(=deviceId) 白名单 |
+| 连接主体 | **一个药箱只有主设备（`MAIN`）建立 MQTT 连接**，clientId = 药箱 deviceId。温湿度 / 光照 / 摄像头等传感器是其**子设备**，不各自建连接，由主控在消息里带 `sensorId` 标明来源（见第 4 章） |
 | 消息幂等 | **所有上行消息必须带 `msgId`**（设备侧生成，建议 `deviceId+序号/时间戳`）。断线重连重发时服务端按 `msgId` 去重，避免重复写入服药记录 / 告警 |
 | 下行确认 | 下行消息带 `msgId` 与 `needAck`；设备处理后向 `.../up/ack` 回执，超时未回执由服务端重发（见第 2 章） |
 
@@ -26,9 +27,9 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 | 方向 | Topic | QoS | 说明 |
 |------|-------|-----|------|
 | 设备→云 | `.../up/telemetry` | 0/1 | 环境遥测（温湿度光照，周期上报） |
-| 设备→云 | `.../up/event/dispense` | 1 | 取药/服药事件（仓位、剂量、时间） |
+| 设备→云 | `.../up/event/dispense` | 1 | 服药事件（药品、剂量、时间、摄像头识别置信度） |
 | 设备→云 | `.../up/event/error` | 1 | 错服、门超时、硬件故障等异常事件 |
-| 设备→云 | `.../up/inventory` | 1 | 仓位库存变更（补药 / 取药后的数量变化；生产日期与有效期由小程序录入，不从设备上报） |
+| 设备→云 | `.../up/inventory` | 1 | 库存变更（按药品的数量变化；生产日期与有效期由小程序录入，不从设备上报） |
 | 设备→云 | **`.../up/ack`** | 1 | **下行消息回执**（计划 / 命令的 `msgId` 处理结果） |
 | 设备→云 | `.../status (LWT)` | 0 | 在线/离线状态（retained） |
 | 云→设备 | `.../down/schedule` | 1 | 下发/同步服药计划与提醒任务 |
@@ -38,27 +39,30 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 
 > **上行消息统一带 `msgId`**，服务端按 `msgId` 幂等去重（同一 `msgId` 重复到达只处理一次）。
 
-上行·环境遥测 `.../up/telemetry`：
+上行·环境遥测 `.../up/telemetry`（**带 `sensorId` 标明是哪个传感器**）：
 ```json
 { "msgId":"BOXA1001-000123", "ts":1759474487000,
+  "sensorId":"BOXA1001-S-TH01",
   "temperature":24.6, "humidity":52.1, "lux":120 }
 ```
+`sensorId` = 该传感器子设备的 `device_id`（见文档 06 的 2.3）；主控转发时原样带上，后端据此区分温湿度 / 光照等不同来源并记录在线状态。
 
 上行·服药事件 `.../up/event/dispense`（含错服判定与摄像头识别字段）：
 ```json
 { "msgId":"BOXA1001-000124", "ts":1759474500000,
   "planId":"p-3301", "planItemId":"pi-9001",
-  "slotNo":3, "medicineId":"m-205",
+  "medicineId":"m-205",
   "actualDose":"1", "unit":"片", "wrongDrug":false, "onTime":true,
   "confidence":0.93, "source":"CAMERA", "imageId":"cap-8801" }
 ```
+
+> 药箱**不划分仓位**，因此没有 `slotNo`：是否拿对药由摄像头**识别药品**判定（`medicineId` 是否等于计划药品），而不是比对格子。
 
 字段说明：`confidence` = 摄像头识别置信度（低于阈值时置 `wrongDrug` 待复核）；`source` = `CAMERA` 摄像头识别 / `MANUAL` 手工补录；`imageId` = 本次服药的抓拍图片ID（对应 `capture.capture_id`）。**当前摄像头全量抓拍**，因此正常服药的 `imageId` 也不为空。
 
 上行·错服异常 `.../up/event/error`：
 ```json
 { "msgId":"BOXA1001-000125", "ts":1759474512000, "type":"WRONG_DRUG",
-  "expectedSlot":3, "actualSlot":5,
   "expectedMedicine":"m-205", "actualMedicine":"m-388" }
 ```
 
@@ -67,19 +71,19 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 { "msgId":"BOXA1001-000126", "ts":1759474520000,
   "ackFor":"d-001", "result":"OK", "reason":null }
 ```
-`result`：`OK` / `FAILED`；`reason` 失败时给出简要原因（如 `"slot_not_found"`）。服务端发出 `needAck:true` 的下行消息后若超时未收到回执，按策略重发（关键命令最多重发 N 次，超出则标记下发失败并告警）。
+`result`：`OK` / `FAILED`；`reason` 失败时给出简要原因（如 `"medicine_not_found"`）。服务端发出 `needAck:true` 的下行消息后若超时未收到回执，按策略重发（关键命令最多重发 N 次，超出则标记下发失败并告警）。
 
 下行·同步计划 `.../down/schedule`（**一次提醒可含多种药，用 `items` 数组下发**）：
 ```json
 { "msgId":"d-001", "planId":"p-3301", "op":"UPSERT",
   "times":["08:00","20:00"], "repeat":"DAILY",
   "alarm":{"missAfterMin":15},
-  "items":[ { "itemId":"pi-9001","medicineId":"m-205","slotNo":3,"dose":"1","unit":"片" },
-            { "itemId":"pi-9002","medicineId":"m-388","slotNo":5,"dose":"2","unit":"粒" } ],
+  "items":[ { "itemId":"pi-9001","medicineId":"m-205","dose":"1","unit":"片" },
+            { "itemId":"pi-9002","medicineId":"m-388","dose":"2","unit":"粒" } ],
   "needAck":true }
 ```
 
-> 设备按 `items` 逐仓取药并**逐条上报**；本次提醒下所有 item 都上报才算完成，缺任一种药由后端判 MISS（见文档 06 的 2.6.1）。
+> 设备按 `items` 逐种取药并**逐条上报**；本次提醒下所有 item 都上报才算完成，缺任一种药由后端判 MISS（见文档 06 的 2.6.1）。
 
 ## 4. 摄像头识别链路（WiFi → 单片机 → MQTT）
 
@@ -100,7 +104,7 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 
 **职责划分**：
 
-- 摄像头：只输出结构化结果（`slotNo` / `medicineId` / `confidence` / 时刻），**不输出图片给单片机**；
+- 摄像头：只输出结构化结果（识别到的 `medicineId` / `confidence` / 时刻），**不输出图片给单片机**；
 - 单片机：唯一 MQTT 客户端与时钟基准，知道"提醒何时触发"，把识别结果合成一条完整事件上报（不做判定，只做聚合与时间戳）；
 - 后端：`onTime` 由后端按计划时间 + 容忍时长计算（与 MISS 判定口径一致），**改阈值无需重烧固件**；单片机本地算的 `onTime` 仅用于即时声光反馈，不作为入库依据。
 

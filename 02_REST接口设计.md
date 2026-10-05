@@ -51,7 +51,7 @@
 | 角色 | 默认权限 |
 |------|----------|
 | 老人本人 | **只读本人数据**：本人计划、记录、告警、本人设备状态、AI 问答；不可改计划 / 配置 Key |
-| 监护人 / 子女 | 对**已生效（ACTIVE）监护关系**下的老人：**可读可写**（计划、药品、仓位、告警处理、阈值、AI Key 配置） |
+| 监护人 / 子女 | 对**已生效（ACTIVE）监护关系**下的老人：**可读可写**（计划、药品、库存、告警处理、阈值、AI Key 配置） |
 | 社区护理人员 | 所辖老人数据**只读** + **处理告警** + **导出记录**；不可改计划与药品 |
 | 家庭医生 | **制定 / 修改服药计划** + **维护药品禁忌知识库** + 查看依从性报告；不处理告警导出 |
 | 设备端 | 仅 MQTT 通道（不走 REST，见文档 03） |
@@ -62,7 +62,7 @@
 
 > 全部实体清单与建表 DDL 见文档 06《数据库设计》。本文件只列接口用到的实体名，便于对照路径含义。
 
-涉及实体：User（老人/监护人）、GuardianRelation、Device、Medicine、Compartment（仓位）、MedPlan（服药计划）、MedRecord（服药记录）、EnvSample（环境遥测）、Alarm（告警）、AlarmSetting（告警规则）、LlmConfig（大模型配置）、DrugManual（说明书）、DrugManualChunk（说明书向量分块，见文档 05 / 06）。
+涉及实体：User（老人/监护人）、GuardianRelation、Device（药箱主控 + 传感器子设备）、Medicine、MedicineStock（库存）、MedPlan（服药计划）、MedRecord（服药记录）、EnvSample（环境遥测）、Alarm（告警）、AlarmSetting（告警规则）、LlmConfig（大模型配置）、DrugManual（说明书）、DrugManualChunk（说明书向量分块，见文档 05 / 06）。
 
 
 ## 3. 认证与用户
@@ -164,11 +164,14 @@ reason=WRONG_DRUG & medicineId=m-205 & planId=p-3301
 | POST | /medicines | 【鉴权】新建/更新药品档案（含禁忌、储存条件）；不传 `ownerElderId` 即公共字典 |
 | GET | /medicines | 【鉴权】药品字典 / 我的药品列表（分页、搜索）；可见范围 = **公共药品（`ownerElderId` 为空）+ 我监护老人的私有药品** |
 | GET | /medicines/{medicineId} | 【鉴权】药品详情 |
-| GET | /devices/{deviceId}/compartments | 【鉴权】设备各仓位库存、生产日期与有效期 |
-| PUT | /devices/{deviceId}/compartments/{slotNo} | 【鉴权】配置仓位：绑定药品、数量、**生产日期与有效期（手动录入）** |
-| POST | /devices/{deviceId}/compartments/{slotNo}/in | 【鉴权】补药入库（增加库存，可同时更新生产日期 / 有效期） |
-| DELETE | /devices/{deviceId}/compartments/{slotNo}/bind | 【鉴权】解绑仓位 |
+| GET | /devices/{deviceId}/sensors | 【鉴权】该药箱下的传感器子设备列表（温湿度 / 光照 / 摄像头，含各自在线状态） |
+| GET | /devices/{deviceId}/stocks | 【鉴权】药箱库存清单（按药品：数量、生产日期、有效期） |
+| PUT | /devices/{deviceId}/stocks/{medicineId} | 【鉴权】录入 / 更新某药品库存：数量、**生产日期与有效期（手动录入）** |
+| POST | /devices/{deviceId}/stocks/{medicineId}/in | 【鉴权】补药入库（增加库存，可同时更新生产日期 / 有效期） |
+| DELETE | /devices/{deviceId}/stocks/{medicineId} | 【鉴权】移除该药品库存 |
 | GET | /devices/{deviceId}/expiring | 【鉴权】临期/过期清单（提前 N 天预警） |
+
+> **药箱不划分仓位 / 格子**：库存按"药箱 + 药品"管理（表 `medicine_stock`，见文档 06 的 2.5）；传感器则按**子设备**细分（`device.device_type` + `parent_device_id`），见文档 06 的 2.3。
 
 ## 6. 服药计划与提醒
 
@@ -184,7 +187,7 @@ reason=WRONG_DRUG & medicineId=m-205 & planId=p-3301
 
 计划保存后，后端将提醒规则转成设备可执行的定时任务，并通过 MQTT 下行同步给设备；提醒触发以设备本地为准，云端做兜底与统计。
 
-> **一次提醒 = 一个计划，可含多种药**：`times` / `repeatRule` / 报警规则在计划头统一配置，药品、仓位、剂量放在 `items` 明细里（见文档 06 的 2.6 / 2.6.1）。漏服判定以"本次所有 item 都有服药记录"为准，缺任一种药即判 MISS。
+> **一次提醒 = 一个计划，可含多种药**：`times` / `repeatRule` / 报警规则在计划头统一配置，药品与剂量放在 `items` 明细里（**无仓位字段**，见文档 06 的 2.6 / 2.6.1）。漏服判定以"本次所有 item 都有服药记录"为准，缺任一种药即判 MISS。
 >
 > **两处口径**：① `times` 为**设备本地墙钟时间**（时区取 `device.timezone`，默认 `Asia/Shanghai`），不是 UTC；② 漏服容忍时长优先级为 **`missAlarmAfterMin`（计划级）> `alarm_setting.missTolerateMin`（老人级）> 系统默认 15 分钟**，计划级留空即沿用上一级。
 
@@ -197,14 +200,14 @@ POST /plans
   "times":["08:00","20:00"],"repeatRule":"DAILY","missAlarmAfterMin":15,
   "alarmRule":{"miss":true,"wrongDrug":true,"expired":true,"env":true},
   "items":[
-    { "medicineId":"m-205","slotNo":3,"dose":"1","unit":"片" },
-    { "medicineId":"m-388","slotNo":5,"dose":"2","unit":"粒","note":"餐后" }
+    { "medicineId":"m-205","dose":"1","unit":"片" },
+    { "medicineId":"m-388","dose":"2","unit":"粒","note":"餐后" }
   ]
 }
 // 响应
 { "code":0, "data":{ "planId":"p-3301","syncState":"SYNCED_TO_DEVICE",
-    "items":[ { "itemId":"pi-9001","medicineId":"m-205","slotNo":3 },
-              { "itemId":"pi-9002","medicineId":"m-388","slotNo":5 } ] } }
+    "items":[ { "itemId":"pi-9001","medicineId":"m-205" },
+              { "itemId":"pi-9002","medicineId":"m-388" } ] } }
 ```
 
 ## 7. 服药记录与依从性
@@ -212,7 +215,7 @@ POST /plans
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | GET | /records?elderId=&from=&to= | 【鉴权】服药记录分页（含是否按时/是否错服） |
-| GET | /records/{recordId} | 【鉴权】记录详情（关联计划与仓位快照） |
+| GET | /records/{recordId} | 【鉴权】记录详情（关联计划与抓拍留证） |
 | GET | /adherence?elderId=&period=day\|week\|month | 【鉴权】依从性统计（按时率/漏服/错服） |
 | POST | /records/{recordId}/confirm | 【鉴权】监护人补录/确认（设备异常时手工校准） |
 | GET | /records/export?elderId=&from=&to= | 【鉴权】导出服药报告（护理/医生用） |
@@ -233,7 +236,7 @@ POST /plans
 | type | 触发来源 | 说明 |
 |------|----------|------|
 | MISS | 后端判定 | 计划时间+容忍时长内未收到该计划服药事件 |
-| WRONG_DRUG | 设备上报 | 实际取药仓位与计划仓位不匹配 |
+| WRONG_DRUG | 设备上报 | 摄像头识别的实际药品 ≠ 计划药品 |
 | EXPIRED | 后端判定 | 按手动录入的 `expiryDate` 扫描：临期预警 + 到期告警 |
 | ENV | 设备上报 | 温度/湿度/光照超出该药品储存阈值 |
 | DEVICE_OFFLINE | 后端判定 | 心跳超时，设备离线超阈值 |
