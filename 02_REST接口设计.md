@@ -9,7 +9,7 @@
 |----|------|
 | Base URL | `http://{后端主机内网IP}:8080/medbox/api/v1`（局域网内网地址，见文档 01） |
 | 请求体格式 | `application/json; charset=utf-8` |
-| 认证方式 | Header: `Authorization: Bearer {JWT}`（设备端走 MQTT 用户名密码 / 一机一密，不走此通道） |
+| 认证方式 | Header: `Authorization: Bearer {JWT}`（设备端走 MQTT，本期匿名连接，不走此通道；抓拍上传的设备侧鉴权见 4.1） |
 | 时间格式 | ISO-8601 **UTC**，如 `2026-10-03T07:04:00Z`；前端本地化展示 |
 | 时区口径 | 除服药计划的 `times`（见第 6 章）外，**所有时间一律 UTC**。`med_plan.times` 存**设备本地墙钟时间**（如 `"08:00"`），时区取 `device.timezone`（默认 `Asia/Shanghai`）；服务端判定时换算成 UTC 后再比较 |
 | 幂等 | 写操作支持 Header: `X-Request-Id`（UUID）去重 |
@@ -151,7 +151,7 @@ reason=WRONG_DRUG & medicineId=m-205 & planId=p-3301
 
 - **`reason` 取值**：`NORMAL` 正常服药抓拍（**当前占绝大多数**，摄像头全量拍）、`WRONG_DRUG` 错服、`LOW_CONFIDENCE` 置信度低于阈值、`MANUAL` 监护人主动请求。列表接口可按 `reason=WRONG_DRUG` 过滤只看异常。
 - **去重建议**：同一服药事件只保留 1 张（摄像头侧连拍时后端可按 `planId + capturedAt` 时间窗去重，或由摄像头侧控制）。
-- **上传侧鉴权走设备身份，不走用户 JWT**：用注册时下发的 `deviceSecret` 做 HMAC 签名，Header 携带 `X-Device-Id` / `X-Device-Sign` / `X-Timestamp`，后端校验签名与时间窗；上传接口只允许该设备绑定老人下的写入。
+- **上传侧鉴权走设备身份，不走用户 JWT**：设备侧用**一把共用密钥**（写在固件与后端配置里，不入库）做 HMAC 签名，Header 携带 `X-Device-Id` / `X-Device-Sign` / `X-Timestamp`（`sign = HMAC_SHA256(sharedSecret, deviceId + timestamp)`），后端校验签名与时间窗；上传接口只允许该设备绑定老人下的写入。将来若启用一机一密，把共用密钥换成每台独立的 `device.secret` 即可，接口不变。（**MQTT 通道本期是匿名的，与此处的 HTTP 上传鉴权相互独立**；若连这一步也想省，局域网阶段可退化为只校验 `X-Device-Id` 是否在库。）
 - **下载侧鉴权**：必须是**老人本人**或其 **ACTIVE 监护人**，其余角色（护理 / 医生）一律 40301 —— 比 1.3 的默认规则更严格。
 - **为什么用 query 传 token**：小程序 `<image src>` 无法携带自定义 Header，故用后端签发的**短期 `fileToken`**（5 分钟有效）拼接在 URL 上；**不要直接把长期 JWT 放 URL**（会落进日志与浏览器历史）。
 - **过期清理（已读 / 未读分开算）**：`expire_at = MIN(captured_at + 30 天, viewed_at + 7 天)` —— **未读最长保留 30 天**，**首次查看后再保留 7 天**（查看只会让过期提前，不会延长）。首次调用 `/captures/{id}/file` 读取图片流时后端自动写入 `viewed_at` 并重算 `expire_at`；天数可配 `medbox.capture.retention-days-unread`（30）/ `retention-days-read`（7）。后端每日定时任务删除到期文件与记录，监护人可手动提前删除。
