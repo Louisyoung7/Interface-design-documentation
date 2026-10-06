@@ -1,6 +1,6 @@
 # 03 · 设备接入协议（MQTT，Broker = EMQX）
 
-> 链路：设备 ⇄ EMQX ⇄ 后端　|　局域网内网部署　|　版本 V1.6
+> 链路：设备 ⇄ EMQX ⇄ 后端　|　局域网内网部署　|　版本 V1.7
 
 ## 1. 连接与鉴权
 
@@ -85,7 +85,7 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 { "msgId":"BOXA1001-000125", "ts":1759474512000, "type":"DOOR_TIMEOUT",
   "detail":"仓门开启超过 60s 未关闭" }
 ```
-`type` 取值：`DOOR_TIMEOUT` 门超时 / `CAMERA_FAILED` 识别失败 / `HW_FAULT` 硬件故障。**错服用 `dispense.wrongDrug`，不要放这里。**
+`type` 取值：`DOOR_TIMEOUT` 门超时 / `CAMERA_FAILED` 识别失败 / `HW_FAULT` 硬件故障。后端收到后**记入设备事件流水**（`GET /devices/{id}/events`）**并生成 `DEVICE_FAULT` 告警**（见文档 02 第 8 章）。**错服用 `dispense.wrongDrug`，不要放这里。**
 
 上行·库存变更 `.../up/inventory`（按药品，不按仓位）：
 ```json

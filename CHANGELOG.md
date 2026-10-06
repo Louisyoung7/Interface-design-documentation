@@ -4,6 +4,27 @@
 > 同步方式见 `00_README_文档索引.md` 的《文档如何同步到代码仓库》。
 > 版本格式：文档集统一版本号（各文件头部标注），打 tag 后代码仓库可按 tag 固定拉取。
 
+## [V1.7] — 2026-10-06（任务清单与 AI 工作流）
+
+新增三份文件，让"两个代码仓库 + 学弟学妹 + 各自的 AI 助手"能按同一套流程协作：
+
+- **`07_特性分支清单_后端.md`**：44 个待办，每个 = 一个 `feat/xxx` 分支。前 8 项为**地基**（项目骨架、统一响应、建表、登录 JWT、权限、MQTT、WebSocket、本地 OCR/Embedding），其余为可分配任务，均标注依赖分支、参考章节与验收标准。
+- **`08_特性分支清单_小程序.md`**：33 个待办，前 5 项为地基（初始化与配置出口、请求封装、登录注册、WebSocket 封装、基础 UI 组件），其余为可分配任务。
+- **`AGENTS.md`**：给 AI 助手的工作约定 —— 不在主分支开发、开工前 `git subtree pull --prefix=spec spec-repo main --squash`、完工时更新文档并 `git subtree push --prefix=spec spec-repo docs/<分支>`、远程更新时回主分支 fetch 再 rebase，以及 AI 的**提醒义务**与自检清单。
+- `00_README` 增加《分支与任务约定》小节；文档同步改为**双向**（pull + push），远端别名统一为 `spec-repo`（与目录 `spec/` 区分）。
+
+### 本次修订（对齐文档与清单时发现的缺口）
+
+- 告警枚举新增 **`DEVICE_FAULT`**，与 03 的 `up/event/error`（门超时 / 识别失败 / 硬件故障）对齐；`DEVICE_OFFLINE` 注明仅主控产生；06 的 `alarm.type` 同步
+- 03 明确 `up/event/error` 的处理：记入设备事件流水并生成 DEVICE_FAULT 告警
+- 07 补充 4 个遗漏分支：`inventory-consume`（消费 `up/inventory`）、`device-fault`、`alarm-device-offline`、`plan-reminder`（REMINDER 推送）
+- 08 修正 `mp-ai-chat` 的参考章节（改指向 05）；`mp-device-events` 补充设备侧异常
+- AGENTS.md 补充"在文档仓库内直接提交，无需 subtree"
+
+### 影响提示
+
+本次**不改变接口与表结构**（仅新增一个告警类型），对代码的影响沿用 V1.5 的《影响提示》；新增的 07 / 08 是**任务划分依据**，各代码仓库据此认领分支。
+
 ## [V1.6] — 2026-10-06（消除歧义与补充调试手段）
 
 文档面向"AI 助手 + 接手任务的同学"，因此把所有**条件句与未定参数收敛为明确决定**，避免不同人 / 不同 AI 各做各的。**本次不改变接口与表结构**，对代码的影响沿用下方 V1.5 的《影响提示》。
