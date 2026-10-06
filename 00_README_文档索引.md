@@ -1,8 +1,10 @@
-# 家用智能药品箱 · 后端 / 小程序接口设计文档（文档集）
+# 家用智能药品箱 · 接口设计文档集（`medbox-spec`）
 
 > 范围：Java 后端（Spring Boot）+ uni-app 小程序　|　协议：HTTP REST、MQTT（EMQX）、WebSocket　|　版本 V1.7
 > 通信方式：当前全部为局域网（内网）通信，无公网域名。
 > 变更记录见 `CHANGELOG.md`；同步到代码仓库的方式见文末《文档如何同步到代码仓库》。
+>
+> **本仓库是 `medbox-spec`**，通过 `git subtree` 与 `medbox-server`（后端）、`medbox-miniapp`（小程序）、`medbox-admin`（Web 后台）双向同步，在代码仓库中位于 `spec/` 目录。
 
 本文档集按主题拆分为多个文件，便于分工评审与联调。各文件内容互不重复，统一约定见 01，数据库设计统一见 06。
 
@@ -45,7 +47,8 @@
 ### 首次接入（每个代码仓库做一次）
 
 ```bash
-git remote add spec-repo https://github.com/<you>/Interface-design-documentation.git
+git remote add spec-repo https://github.com/<you>/medbox-spec.git
+# 或 SSH：git remote add spec-repo git@github.com:<you>/medbox-spec.git
 git subtree add --prefix=spec spec-repo main --squash
 ```
 
