@@ -1,6 +1,6 @@
 # 03 · 设备接入协议（MQTT，Broker = EMQX）
 
-> 链路：设备 ⇄ EMQX ⇄ 后端　|　局域网内网部署　|　版本 V1.5
+> 链路：设备 ⇄ EMQX ⇄ 后端　|　局域网内网部署　|　版本 V1.6
 
 ## 1. 连接与鉴权
 
@@ -15,8 +15,8 @@
 | 后端接入方式 | Java 后端以订阅方身份连到 EMQX（Spring Integration MQTT / Eclipse Paho），订阅 `.../up/#` 消费上报、向 `.../down/#` 发布下行 |
 | EMQX 认证 | **本期不做认证**：EMQX 保持默认匿名（`allow_anonymous=true`），设备与后端能连到 1883 即可收发。将来需要时**分两级加固**：① 关闭匿名 + 共用用户名密码 + `clientId=deviceId` 白名单 + topic ACL；② 更强的**一机一密**（每台设备独立凭据 + EMQX HTTP 认证 / HMAC 动态签名 / 按 `${clientid}` 限制 topic）。详见文档 01 附录第 2 条 |
 | 连接主体 | **一个药箱只有主设备（`MAIN`）建立 MQTT 连接**，clientId = 药箱 deviceId。温湿度 / 光照 / 摄像头等传感器是其**子设备**，不各自建连接，由主控在消息里带 `sensorId` 标明来源（见第 4 章） |
-| 消息幂等 | **所有上行消息必须带 `msgId`**（设备侧生成，建议 `deviceId+序号/时间戳`）。断线重连重发时服务端按 `msgId` 去重，避免重复写入服药记录 / 告警 |
-| 下行确认 | 下行消息带 `msgId` 与 `needAck`；设备处理后向 `.../up/ack` 回执，超时未回执由服务端重发（见第 2 章） |
+| 消息幂等 | **所有上行消息必须带 `msgId`**，格式固定为 **`{deviceId}-{10位递增序号}`**（如 `BOXA1001-0000000124`，序号持久化、重启不归零）。断线重连重发时服务端按 `msgId` 去重，避免重复写入服药记录 / 告警 |
+| 下行确认 | 下行消息带 `msgId` 与 `needAck`；设备处理后向 `.../up/ack` 回执。**重发策略已确定：超时 5s 未回执则重发，最多 3 次**；3 次仍无回执则标记该下发失败并生成告警（见第 2 章） |
 
 EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、Topic 监控与调试发布 / 订阅。
 
@@ -101,14 +101,14 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
               { "sensorId":"BOXA1001-S-LX01","online":true },
               { "sensorId":"BOXA1001-S-CAM01","online":false } ] }
 ```
-因为**只有主控有 MQTT 连接**，子设备没有自己的遗嘱消息，故由主控每 60s 汇总上报一次；后端据此更新各子设备的 `last_heartbeat` 与 `online_state`，超时未上报即判该传感器离线（不生成 DEVICE_OFFLINE 告警，或按配置单独提示）。
+因为**只有主控有 MQTT 连接**，子设备没有自己的遗嘱消息，故由主控每 **60s** 汇总上报一次；后端据此更新各子设备的 `last_heartbeat` 与 `online_state`。**离线判定（已确定）：连续 3 个周期（180s）未上报即判该传感器离线**，**不生成 DEVICE_OFFLINE 告警**，仅在设备详情与 `DEVICE_STATUS` 推送中标注。
 
 上行·下行回执 `.../up/ack`（对应下行消息中的 `msgId`）：
 ```json
 { "msgId":"BOXA1001-000126", "ts":1759474520000,
   "ackFor":"d-001", "result":"OK", "reason":null }
 ```
-`result`：`OK` / `FAILED`；`reason` 失败时给出简要原因（如 `"medicine_not_found"`）。服务端发出 `needAck:true` 的下行消息后若超时未收到回执，按策略重发（关键命令最多重发 N 次，超出则标记下发失败并告警）。
+`result`：`OK` / `FAILED`；`reason` 失败时给出简要原因（如 `"medicine_not_found"`）。服务端发出 `needAck:true` 的下行消息后，**5s 未收到回执则重发，最多 3 次**；仍无回执则标记下发失败并告警。
 
 下行·同步计划 `.../down/schedule`（**一次提醒可含多种药，用 `items` 数组下发**）：
 ```json
@@ -147,6 +147,48 @@ EMQX 自带 Dashboard（默认 `http://{内网IP}:18083`），可查看连接、
 
 **图片不走 MQTT**：MQTT 面向小负载，几百 KB 的 JPEG 会阻塞同连接上的其他消息且重传代价高。抓拍图片由摄像头用 **HTTP multipart 直传后端**（`POST /devices/{deviceId}/captures`，见文档 02 的 4.1），**不过单片机**（单片机既无带宽也无存储转发几百 KB 的图片）。
 
-**建议（对摄像头侧）**：每个服药事件只保留 **1 张**代表性图片，避免连拍多张造成存储膨胀；抓拍时带上 `capturedAt` 与 `confidence`，便于后端关联与复核。
+**对摄像头侧的要求（已确定）**：每个服药事件**只保留 1 张**代表性图片（禁止连拍多张上传）；抓拍时必须带 `capturedAt` 与 `confidence`，便于后端关联与复核。后端侧另有 `planId + 60s 时间窗`的兜底去重（见文档 02 的 4.1）。
 
 **后续演进（本期不实现）**：若全量上传的带宽 / 存储压力不可接受，可在设备侧引入**边缘节点**（本地小主机或算力模组），由它先做数据清洗 —— 去重、丢弃模糊帧、只保留关键帧、必要时裁剪脱敏 —— 再把**结构化结果 + 精选图片**上传后端。届时后端接口与协议**无需改动**（仍是同一套 `up/event/dispense` 与 `POST /captures`），只是上游由摄像头换成边缘节点。
+
+## 5. 联调与调试（没有真设备也能跑通链路）
+
+设备固件未就绪时，用下面三种工具即可完成端到端验证。
+
+### 5.1 EMQX Dashboard —— 主力工具（推荐）
+
+访问 `http://{EMQX主机IP}:18083`（**首次登录后务必改掉默认 `admin/public`**）。
+
+- **WebSocket 客户端**（Dashboard 内置工具）：可以**连接 + 订阅 + 发布**任意 topic，是联调 MQTT 最方便的方式，通常不需要再装 mosquitto；
+- **连接 / 客户端管理**：确认设备是否在线、`clientId` 是否正确；
+- **主题监控**：实时看消息有没有发出来、内容对不对。
+
+典型用法：用 Dashboard 订阅 `medbox/{pk}/BOXA1001/up/#`，再手动发布一条 `up/event/dispense`，观察后端是否落 `med_record`、是否经 WebSocket 推送告警。
+
+### 5.2 mosquitto_pub / mosquitto_sub —— 脚本造数据
+
+`mosquitto_pub` **只能发布，不能订阅**；要看回包需另开终端用 `mosquitto_sub`。
+
+```bash
+# 模拟设备上报一次服药事件
+mosquitto_pub -h 192.168.1.10 -p 1883 -i BOXA1001 -q 1 \
+  -t 'medbox/pk/BOXA1001/up/event/dispense' \
+  -m '{"msgId":"BOXA1001-0000000124","ts":1759474500000,"planId":"p-3301",
+       "planItemId":"pi-9001","medicineId":"m-205","actualDose":"1","unit":"片",
+       "wrongDrug":false,"onTime":true,"confidence":0.93,
+       "source":"CAMERA","imageId":null}'
+
+# 同时另开一个终端看上行是否到达
+mosquitto_sub -h 192.168.1.10 -p 1883 -i debugger-01 \
+  -t 'medbox/pk/BOXA1001/up/#' -v
+```
+
+注意 `-i` 的 clientId 必须等于 `deviceId`，否则后端按 clientId 找不到设备。
+
+### 5.3 curl —— 后端 REST 与图片上传
+
+见文档 02 的 1.4（含登录取 token、业务接口、multipart 上传抓拍图片的完整示例）。
+
+### 5.4 WebSocket 推送
+
+见文档 04（可用 `wscat` 或小程序端直连验证）。

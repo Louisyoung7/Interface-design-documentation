@@ -1,6 +1,6 @@
 # 05 · AI 大模型接入与 RAG 方案（Spring Boot + Spring AI）
 
-> 后端：Spring Boot　|　数据库：PostgreSQL（pgvector，建表见文档 06）　|　**OCR 与 Embedding：本地部署（不出网、无需 Key）**　|　**Chat 问答：OpenAI 兼容 API，API Key 由监护人代配**　|　版本 V1.5
+> 后端：Spring Boot　|　数据库：PostgreSQL（pgvector，建表见文档 06）　|　**OCR 与 Embedding：本地部署（不出网、无需 Key）**　|　**Chat 问答：OpenAI 兼容 API，API Key 由监护人代配**　|　版本 V1.6
 
 ## 1. 接入方式：Java 后端直连大模型
 
@@ -57,7 +57,7 @@ PUT /ai/config?elderId=e-1001
 | POST | /ai/sessions | 【鉴权】创建会话，返回 `sessionId` |
 | GET | /ai/sessions?elderId= | 【鉴权】历史会话列表 |
 | GET | /ai/sessions/{sessionId}/messages | 【鉴权】会话消息明细 |
-| PATCH | /ai/sessions/{sessionId} | 【鉴权】重命名会话（可选） |
+| PATCH | /ai/sessions/{sessionId} | 【鉴权】重命名会话（本期实现） |
 | DELETE | /ai/sessions/{sessionId} | 【鉴权】删除会话及其消息 |
 
 > **会话规则**：`sessionId` 可省略 —— 首次调用 `/ai/chat`（或 `/ai/chat/stream`）时若未传 `sessionId`，后端**隐式创建**一个新会话并在响应中返回 `sessionId`，前端据此续接同一轮对话。会话归属 `elderId`，切换老人即切换会话列表。
@@ -125,12 +125,14 @@ file: 阿莫西林说明书.jpg        // 或 .pdf
 
 - **部署形态**：一个 Python 侧车服务 `ocr-service`（FastAPI），`POST /ocr` 收图片 / PDF，返回按行 / 段落组织的纯文本；Java 侧抽象为 `OcrClient` 接口，实现类可切换：`medbox.ocr.provider=local | cloud`（`LocalOcrClient` / `CloudOcrClient`）。
 - **PDF**：带文字层的 PDF 直接用 `pdfbox` 抽取文本，**跳过 OCR**（更快更准）；扫描件则渲染成页图（`pypdfium2` / `pdf2image`）再逐页 OCR。
-- **提效**：OCR 前做简单预处理（灰度、去噪、可选透视矫正），能明显提升说明书小字的识别率。
+- **预处理（已确定范围）**：OCR 前做**灰度化 + 去噪**；**本期不做透视矫正 / 版面矫正**，交由监护人拍正即可。这能明显提升说明书小字的识别率。
 - **Embedding 同样本地化**（Ollama + `bge-m3`，1024 维，无 Key、不出网，见 4.3）。这样整条**录入链路（OCR → 切块 → 向量化 → 入库）完全在局域网内闭环**，出网只剩 Chat 问答一项。
 
-### 4.2 备选：多模态大模型直接读图
+### 4.2 多模态大模型直接读图（本期不实现）
 
-原"不做多模态直接读图"的限制放宽为：**默认不用，作为 OCR 失败时的兜底重试**。若监护人为老人配置的模型支持视觉，可把说明书图片直接交给它转写为文本，不新增任何部署。成本按 token 计，且只发生在**录入**环节（低频），不在问答环节。
+**已决定：本期不实现多模态读图**（既不作为主路径，也不作为 OCR 失败时的兜底）。说明书入库一律走"本地 OCR → 切块 → 向量化"这一条路径，OCR 失败时标记为 `FAILED` 由监护人重新上传（接口见文档 02 第 4 章）。
+
+> 备选说明（仅供将来参考）：若监护人为老人配置的模型支持视觉，可把说明书图片直接交给它转写为文本，不新增部署；成本按 token 计且只发生在录入环节。将来要启用时，后端只需在 OCR 失败分支增加一次调用，接口与协议不变。
 
 ### 4.3 Embedding 本地化：Ollama + bge-m3
 
@@ -160,7 +162,9 @@ spring:
 
 **为什么不直接用 llama.cpp**：Ollama 的底层就是 llama.cpp，等于"llama.cpp + 模型仓库 + 常驻服务 + OpenAI 兼容 API + 自动 GPU/CPU 调度"的省心版，能力上并没有损失。直接上 llama.cpp 需要自己找 GGUF 量化版、手动指定 `--embedding` 与 `--pooling`（配错则向量质量直接崩）、自己起 `llama-server` 并管进程与开机自启，且 Spring AI 没有专用 starter（只能把 OpenAI 兼容 starter 指向本地并伪造 api-key）。除非将来要把 **Chat 也本地化**并精细控制量化 / 并发 / 显存（那种场景更适合 llama.cpp 或 vLLM），当前只做 embedding 时 Ollama 更省事。
 
-**更轻的备选**：若嫌 1.2GB 太大，可让 Python 侧车服务同时承担 OCR 与 Embedding，用 ONNX 直接加载 `bge-small-zh-v1.5`（约 100MB，**512 维**，中文场景效果不错且更快）。代价是该服务需自行暴露 `/v1/embeddings` 供 Spring AI 的 OpenAI 兼容 starter 调用，且文档 06 的维度要改为 512 并重建全部分块向量。
+**选型已确定：Ollama + `bge-m3`（1024 维）**，不采用下面的轻量化备选。
+
+> 备选说明（不采用）：若嫌 1.2GB 太大，可让 Python 侧车服务同时承担 OCR 与 Embedding，用 ONNX 加载 `bge-small-zh-v1.5`（约 100MB、512 维）。但需自行暴露 `/v1/embeddings`，且文档 06 的维度要改为 512 并重建向量 —— 为避免多一套自研接口，本期不选。
 
 入库与问答链路：
 
@@ -192,7 +196,7 @@ spring:
    - 请求显式传了 `medicineId` → 直接用；
    - 否则用**在库药品名做字符串包含 / 模糊匹配**（"阿莫西林还有半年过期能吃吗" → 命中"阿莫西林胶囊"）；
    - 仍匹配不到 → **不猜**，把范围放宽为"该老人全部在库药品"，避免答非所问。
-3. **带过滤的向量召回**（Top-K 建议 4~6，余弦距离）：
+3. **带过滤的向量召回**（**Top-K = 5**，余弦距离）：
 
 ```sql
 SELECT chunk_id, medicine_id, content, page,
@@ -204,7 +208,7 @@ ORDER BY distance
 LIMIT 5;
 ```
 
-4. **拼装与兜底**：结构化事实（库存 / 有效期 / 禁忌）+ 召回片段（带 `chunk_id` 便于溯源）+ 问题 → Chat。**若召回为空或最近距离仍低于相似度阈值**，只用结构化数据作答，并在 `disclaimer` 中说明"未在说明书中找到依据"，避免模型凭空编造。
+4. **拼装与兜底**：结构化事实（库存 / 有效期 / 禁忌）+ 召回片段（带 `chunk_id` 便于溯源）+ 问题 → Chat。**若召回为空，或最优片段的余弦距离 > 0.6（阈值已确定）**，则判定为"检索无依据"：只用结构化数据作答，并在 `disclaimer` 中说明"未在说明书中找到依据"，避免模型凭空编造。
 
 > 只有**文档的写入（录入）环节**才需要拿全部说明书；问答环节永远先收敛 `medicineIds` 再检索。
 
@@ -216,4 +220,4 @@ Spring AI 自动装配的 `ChatModel` 是单例、读全局 `api-key`；本项�
 - **Chat 问答**：在每次请求内按 elderId 取出该老人的 `{baseUrl, apiKey, model}`，动态构造 ChatClient/ChatModel（或用 OpenAI 兼容客户端覆盖请求头 `Authorization`），实现"每个老人用监护人配的 Key 调用"，不要直接注入全局单例 bean；
 - 未配置 / Key 无效：走友好提示 + 50310，不回显明文 Key。
 
-> 流式问答把同步调用换成流式（`Flux<String>`），在 `/ai/chat/stream` 以 SSE 转发 `delta`；若走 WebSocket 备选通道，则按文档 04 的 `AI_STREAM` 帧推送。
+> 流式问答把同步调用换成流式（`Flux<String>`），在 `/ai/chat/stream` 以 **SSE** 转发 `delta`。**已确定：流式只用 SSE 这一条通道**，不实现 WebSocket 的 `AI_STREAM` 备选通道（文档 04 中该帧类型保留但不使用）。

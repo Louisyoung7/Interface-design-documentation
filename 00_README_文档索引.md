@@ -1,6 +1,6 @@
 # 家用智能药品箱 · 后端 / 小程序接口设计文档（文档集）
 
-> 范围：Java 后端（Spring Boot）+ uni-app 小程序　|　协议：HTTP REST、MQTT（EMQX）、WebSocket　|　版本 V1.5
+> 范围：Java 后端（Spring Boot）+ uni-app 小程序　|　协议：HTTP REST、MQTT（EMQX）、WebSocket　|　版本 V1.6
 > 通信方式：当前全部为局域网（内网）通信，无公网域名。
 > 变更记录见 `CHANGELOG.md`；同步到代码仓库的方式见文末《文档如何同步到代码仓库》。
 
@@ -42,7 +42,7 @@ git subtree add --prefix=spec spec main --squash
 
 ```bash
 git subtree pull --prefix=spec spec main --squash      # 拉最新
-git subtree pull --prefix=spec spec v1.5 --squash      # 或按 tag 固定版本
+git subtree pull --prefix=spec spec v1.6 --squash      # 或按 tag 固定版本
 git show --stat HEAD                                    # 看这次更新了哪些文件
 ```
 

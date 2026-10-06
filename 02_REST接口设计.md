@@ -1,6 +1,6 @@
 # 02 · REST 接口设计
 
-> 所有路径均相对 Base URL：`http://{后端主机内网IP}:8080/medbox/api/v1`　|　版本 V1.5
+> 所有路径均相对 Base URL：`http://{后端主机内网IP}:8080/medbox/api/v1`　|　版本 V1.6
 > 标注【鉴权】表示需携带 JWT，监护数据类接口需校验权限。AI 相关接口见文档 05。
 
 ## 1. 通用约定
@@ -58,6 +58,36 @@
 
 **通用校验顺序**：① 是否登录（40101）→ ② 对目标 `elderId` / `deviceId` 是否有监护 / 管理关系（40301）→ ③ 关系是否已生效（40302）→ ④ 该角色是否具备此操作权限（40301）。越权一律 40301，不区分"资源不存在"与"无权限"，避免资源枚举。
 
+### 1.4 接口调试（curl）
+
+后端接口一律可用 `curl` 直接调试（局域网阶段为明文 HTTP，无需证书）。典型流程：
+
+```bash
+# 1) 登录拿 token
+TOKEN=$(curl -s -X POST http://192.168.1.10:8080/medbox/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"account":"13800001234","password":"******"}' | jq -r '.data.token')
+
+# 2) 带 token 调业务接口
+curl -s "http://192.168.1.10:8080/medbox/api/v1/plans?elderId=e-1001&page=1&size=20" \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# 3) 写操作带上幂等头与请求体
+curl -s -X POST http://192.168.1.10:8080/medbox/api/v1/plans \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -H 'X-Request-Id: 8f2c1a9e-3b7d-4c1a-9f0e-2d5b6a7c8f10' \
+  -d '{"elderId":"e-1001","name":"早餐后","times":["08:00"],"repeatRule":"DAILY",
+       "items":[{"medicineId":"m-205","dose":"1","unit":"片"}]}' | jq
+```
+
+建议配合 `jq` 查看响应；也可用 Postman / Apifox 导入同一套接口。抓拍图片上传用 `curl -F`（multipart）：
+
+```bash
+curl -s -X POST http://192.168.1.10:8080/medbox/api/v1/devices/BOXA1001-S-CAM01/captures \
+  -H "X-Device-Id: BOXA1001-S-CAM01" -H "X-Device-Sign: <hmac>" -H "X-Timestamp: 1759474540" \
+  -F "file=@capture.jpg" -F "reason=WRONG_DRUG" -F "medicineId=m-205" | jq
+```
+
 ## 2. 核心数据模型
 
 > 全部实体清单与建表 DDL 见文档 06《数据库设计》。本文件只列接口用到的实体名，便于对照路径含义。
@@ -86,7 +116,8 @@
 > - 登录账号为手机号或用户名；密码服务端 **BCrypt 加盐哈希**存储，库内不存明文，登录失败统一返回 `40102` 不区分"账号不存在 / 密码错误"；
 > - 局域网阶段为明文 HTTP，密码在传输层可见；在意的话前端可先做一次 SHA-256 再传（**不是安全替代**），正式环境直接上 HTTPS（见文档 01 附录）；
 > - **本阶段不做微信登录**：`wx.login` + `code2session` 虽然是免费的基础能力（个人主体小程序即可用，无需微信认证），但仍需后端出网访问 `api.weixin.qq.com`、配置 appid / secret，并额外设计"首次微信登录如何绑定已有账号"的流程。当前统一走账号密码；后续需要时再加回 `POST /auth/login/wechat` 并在 `user` 表补 `wechat_open_id` 字段即可。
-> - 老人账号可由监护人在小程序内代建，或由 Web 管理后台创建（若全部由后台代建，可去掉 `/auth/register`）。
+> - **会话有效期（已确定）**：access token **2 小时**（`expiresIn: 7200`），refresh token **7 天**；refresh 采用轮换（换新即作废旧的）。
+> - **老人账号的创建方式（已确定）**：**保留 `/auth/register`**，监护人可在小程序内注册并为老人代建账号；Web 管理后台亦可创建，但本期不做后台。
 
 **示例：账号密码登录**
 
@@ -153,8 +184,8 @@ reason=WRONG_DRUG & medicineId=m-205 & planId=p-3301
 **约定**：
 
 - **`reason` 取值**：`NORMAL` 正常服药抓拍（**当前占绝大多数**，摄像头全量拍）、`WRONG_DRUG` 错服、`LOW_CONFIDENCE` 置信度低于阈值、`MANUAL` 监护人主动请求。列表接口可按 `reason=WRONG_DRUG` 过滤只看异常。
-- **去重建议**：同一服药事件只保留 1 张（摄像头侧连拍时后端可按 `planId + capturedAt` 时间窗去重，或由摄像头侧控制）。
-- **上传侧鉴权走设备身份，不走用户 JWT**：设备侧用**一把共用密钥**（写在固件与后端配置里，不入库）做 HMAC 签名，Header 携带 `X-Device-Id` / `X-Device-Sign` / `X-Timestamp`（`sign = HMAC_SHA256(sharedSecret, deviceId + timestamp)`），后端校验签名与时间窗；上传接口只允许该设备绑定老人下的写入。将来若启用一机一密，把共用密钥换成每台独立的 `device.secret` 即可，接口不变。（**MQTT 通道本期是匿名的，与此处的 HTTP 上传鉴权相互独立**；若连这一步也想省，局域网阶段可退化为只校验 `X-Device-Id` 是否在库。）
+- **去重规则（已确定）**：同一服药事件**只保留 1 张**。后端按 `planId + capturedAt` **60 秒时间窗**去重，窗口内的重复抓拍只保留第一张（摄像头侧也应尽量只拍 1 张）。
+- **上传侧鉴权走设备身份，不走用户 JWT（已确定）**：设备侧用**一把共用密钥**（写在固件与后端配置里，不入库）做 HMAC 签名，Header 携带 `X-Device-Id` / `X-Device-Sign` / `X-Timestamp`，其中 `sign = HMAC_SHA256(sharedSecret, deviceId + timestamp)`；后端校验签名并校验**时间窗 ±5 分钟**（防重放）。上传接口只允许写入该设备所属药箱绑定的老人。**不做"只校验 `X-Device-Id`"的退化方案**。MQTT 通道本期是匿名的，与此处的 HTTP 上传鉴权相互独立。
 - **下载侧鉴权**：必须是**老人本人**或其 **ACTIVE 监护人**，其余角色（护理 / 医生）一律 40301 —— 比 1.3 的默认规则更严格。
 - **为什么用 query 传 token**：小程序 `<image src>` 无法携带自定义 Header，故用后端签发的**短期 `fileToken`**（5 分钟有效）拼接在 URL 上；**不要直接把长期 JWT 放 URL**（会落进日志与浏览器历史）。
 - **过期清理（已读 / 未读分开算）**：`expire_at = MIN(captured_at + 30 天, viewed_at + 7 天)` —— **未读最长保留 30 天**，**首次查看后再保留 7 天**（查看只会让过期提前，不会延长）。首次调用 `/captures/{id}/file` 读取图片流时后端自动写入 `viewed_at` 并重算 `expire_at`；天数可配 `medbox.capture.retention-days-unread`（30）/ `retention-days-read`（7）。后端每日定时任务删除到期文件与记录，监护人可手动提前删除。
