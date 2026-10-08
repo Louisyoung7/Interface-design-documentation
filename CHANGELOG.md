@@ -4,6 +4,18 @@
 > 同步方式见 `00_README_文档索引.md` 的《文档如何同步到代码仓库》。
 > 版本格式：文档集统一版本号（各文件头部标注），打 tag 后代码仓库可按 tag 固定拉取。
 
+## [Unreleased] — 2026-10-08（AGENTS.md 落地方式与危险命令铁律）
+
+- **`AGENTS.md` / `00_README_文档索引.md`**：代码仓库根目录入口的落地方式由"必须全量复制"改为**二选一** ——
+  - **① 全量复制**：把正本内容原样抄到根目录 `AGENTS.md`，最可靠，但每次 `git subtree pull` 后需重抄；
+  - **② 指针文件（推荐）**：根目录 `AGENTS.md` 只写"我是指针，正本在 `spec/`" + `@spec/AGENTS.md` 导入 + 强制 AI 先 read 正本的指令，永不漂移，实测 AI 不跟随再退回 ①。
+  - 明确**指针与正本内容本就不同，不可用 diff 比对**；自检改用 `test -f spec/AGENTS.md && grep -q "spec/AGENTS.md" AGENTS.md && echo OK`。
+- **新增铁律第 6 条**：`git reset --hard`、`git checkout -- .`、`git rebase`、`git stash pop` 等会丢弃工作区改动的命令，执行前必须先 `git status` 确认干净，并把改动 `commit` 或 `git stash -u`（从未 `add` 过的内容 git 找不回）；第 7 节自检清单同步增加一条。
+
+### 影响提示
+
+本次**不改变接口与表结构**。影响的代码仓库：`medbox-server` / `medbox-miniapp` / `medbox-admin` —— 已采用全量复制的仓库无需改动；采用指针文件的仓库检查根目录 `AGENTS.md` 是否仍指向 `spec/` 即可。
+
 ## [V1.7] — 2026-10-06（任务清单与 AI 工作流）
 
 - **文档仓库定名为 `medbox-spec`**（与代码仓库 `medbox-server` / `medbox-miniapp` / `medbox-admin` 统一前缀，并与 `spec/` 目录、`spec-repo` 远端别名对齐）；README 与索引中的仓库引用、示例命令同步更新。
